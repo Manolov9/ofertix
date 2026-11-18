@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSourceSearchUrl, extractPageOffers, firstImageUrl, formatPriceLabel, getCatalog, matchesQuery, parseCatalogPrice } from "./catalog";
+import { buildSourceSearchImageUrl, buildSourceSearchUrl, extractPageOffers, firstImageUrl, formatPriceLabel, getCatalog, matchesQuery, parseCatalogPrice } from "./catalog";
 import { catalogCategories, isCatalogCategoryId } from "@shared/catalog-categories";
 
 describe("Ofertix OCR catalog index", () => {
@@ -24,6 +24,14 @@ describe("Ofertix OCR catalog index", () => {
     const unfiltered = new URL(buildSourceSearchUrl("Кисело мляко"));
     expect(unfiltered.searchParams.has("category")).toBe(false);
     expect(new URL(buildSourceSearchUrl("Кисело мляко", "999")).searchParams.has("category")).toBe(false);
+  });
+
+  it("builds the same optimized matching-image URL used by the source search cards", () => {
+    const image = new URL(buildSourceSearchImageUrl(9152204));
+    expect(image.origin).toBe("https://katalozi-bg.info");
+    expect(image.pathname).toBe("/search-img");
+    expect(image.searchParams.get("index_id")).toBe("9152204");
+    expect(image.searchParams.get("padding")).toBe("170");
   });
 
   it("matches products, descriptions and case-insensitive substrings", () => {

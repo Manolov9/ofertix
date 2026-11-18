@@ -22,7 +22,7 @@ export type SyncState = { status: "idle" | "running" | "success" | "error"; stag
 
 const sourceUrl = "https://katalozi-bg.info/companies";
 export type SourceHit = { id: string; page: number; text: string; price?: number; priceLabel?: string };
-export type SourceCatalogMatch = { id: string; url: string; query: string; page: number; imageUrl: string; pageUrl: string; storeName: string; catalogTitle: string; hits: number; expirationDate: string; statusLabel: string; period: OfferPeriod; sourceText?: string; sourcePrice?: number; sourcePriceLabel?: string; sourceHits?: SourceHit[] };
+export type SourceCatalogMatch = { id: string; url: string; query: string; page: number; imageUrl: string; coverImageUrl: string; pageUrl: string; storeName: string; catalogTitle: string; hits: number; expirationDate: string; statusLabel: string; period: OfferPeriod; sourceText?: string; sourcePrice?: number; sourcePriceLabel?: string; sourceHits?: SourceHit[] };
 const sourceSearchCache = createTimedAsyncCache<SourceCatalogMatch[]>({
   freshTtlMs: 5 * 60_000,
   staleTtlMs: 55 * 60_000,
@@ -62,6 +62,10 @@ export function buildSourceSearchUrl(query: string, category = "") {
   if (isCatalogCategoryId(category)) params.set("category", category);
   return `https://katalozi-bg.info/search?${params.toString()}`;
 }
+export function buildSourceSearchImageUrl(indexId: string | number, padding = 170) {
+  const params = new URLSearchParams({ index_id: String(indexId), padding: String(padding) });
+  return `https://katalozi-bg.info/search-img?${params.toString()}`;
+}
 async function fetchText(url: string, timeoutMs = 20_000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -83,7 +87,7 @@ export async function searchSourceCatalogs(query: string, category = ""): Promis
     const decodedHtml = html.replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ");
     for (const card of decodedHtml.matchAll(/<search-thumbnail\s+:index='([^']+)'/gi)) {
       try {
-        const data = JSON.parse(card[1]) as { catalog_id: number; page: number; imagePath?: string; catalogUrl?: string; line?: string; data?: { text?: string }; innerHits?: Array<{ _id?: string; _source?: { page?: number; line?: string; data?: { text?: string } } }>; catalog?: { expiration_date?: string; title?: string; company?: { bgName?: string } } };
+        const data = JSON.parse(card[1]) as { id?: string | number; catalog_id: number; page: number; imagePath?: string; catalogUrl?: string; line?: string; data?: { text?: string }; innerHits?: Array<{ _id?: string; _source?: { page?: number; line?: string; data?: { text?: string } } }>; catalog?: { expiration_date?: string; title?: string; thumbnail?: string; company?: { bgName?: string } } };
         const id = String(data.catalog_id);
         const page = Number(data.page);
         const expirationDate = data.catalog?.expiration_date || "";
@@ -101,15 +105,16 @@ export async function searchSourceCatalogs(query: string, category = ""): Promis
         }).filter(hit => hit.text.length > 0 && matchesQuery(hit.text, normalizedQuery));
         const relevantHits = sourceHits.length ? sourceHits : [{ id: `${id}-${page}`, page, text: sourceText, price: sourcePrice?.price, priceLabel: sourcePrice?.priceLabel }];
         const hits = relevantHits.length;
-        const pageUrl = `https://katalozi-bg.info/catalogs/${id}/${page}.jpg`;
-        const imageUrl = `https://katalozi-bg.info/catalogs/${id}/small/1.jpg`;
-        matches.push({ id, url: `https://katalozi-bg.info/search/${id}?query=${encodeURIComponent(normalizedQuery)}`, query: normalizedQuery, page, pageUrl, imageUrl, storeName: data.catalog?.company?.bgName || "Магазин", catalogTitle: data.catalog?.title || `Каталог ${id}`, hits, expirationDate, statusLabel, period, sourceText, sourcePrice: sourcePrice?.price, sourcePriceLabel: sourcePrice?.priceLabel, sourceHits: relevantHits });
+        const pageUrl = data.imagePath ? new URL(data.imagePath, "https://katalozi-bg.info").href : `https://katalozi-bg.info/catalogs/${id}/${page}.jpg`;
+        const imageUrl = data.id !== undefined ? buildSourceSearchImageUrl(data.id) : `https://katalozi-bg.info/catalogs/${id}/small/${page}.jpg`;
+        const coverImageUrl = data.catalog?.thumbnail || `https://katalozi-bg.info/catalogs/${id}/small/1.jpg`;
+        matches.push({ id, url: `https://katalozi-bg.info/search/${id}?query=${encodeURIComponent(normalizedQuery)}`, query: normalizedQuery, page, pageUrl, imageUrl, coverImageUrl, storeName: data.catalog?.company?.bgName || "Магазин", catalogTitle: data.catalog?.title || `Каталог ${id}`, hits, expirationDate, statusLabel, period, sourceText, sourcePrice: sourcePrice?.price, sourcePriceLabel: sourcePrice?.priceLabel, sourceHits: relevantHits });
       } catch { /* keep fallback link parsing below */ }
     }
     if (matches.length) return matches;
     for (const match of html.matchAll(/href=["']([^"']*\/search\/(\d+)[^"']*)["']/gi)) {
       const id = match[2];
-      if (!matches.some(item => item.id === id)) matches.push({ id, url: new URL(match[1], "https://katalozi-bg.info").href, query: normalizedQuery, page: 1, pageUrl: `https://katalozi-bg.info/catalogs/${id}/1.jpg`, imageUrl: `https://katalozi-bg.info/catalogs/${id}/small/1.jpg`, storeName: "Магазин", catalogTitle: `Каталог ${id}`, hits: 1, expirationDate: "", statusLabel: "", period: "this-week" });
+      if (!matches.some(item => item.id === id)) matches.push({ id, url: new URL(match[1], "https://katalozi-bg.info").href, query: normalizedQuery, page: 1, pageUrl: `https://katalozi-bg.info/catalogs/${id}/1.jpg`, imageUrl: `https://katalozi-bg.info/catalogs/${id}/small/1.jpg`, coverImageUrl: `https://katalozi-bg.info/catalogs/${id}/small/1.jpg`, storeName: "Магазин", catalogTitle: `Каталог ${id}`, hits: 1, expirationDate: "", statusLabel: "", period: "this-week" });
     }
     return matches;
   }).catch(() => []);

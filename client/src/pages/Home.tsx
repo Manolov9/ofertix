@@ -21,6 +21,7 @@ type SourceMatch = {
   query: string;
   page: number;
   imageUrl: string;
+  coverImageUrl: string;
   pageUrl: string;
   storeName: string;
   catalogTitle: string;
@@ -124,7 +125,7 @@ export default function Home() {
     (storeFilter === "all" || match.storeName === storeFilter)
   ), [sourceMatches, period, storeFilter]);
 
-  // Retained only for the existing „НАЙ-ЕВТИНО“ catalog badge; no prices are shown in the UI.
+  // The live source price drives both the summary and the existing „НАЙ-ЕВТИНО“ badge.
   const visiblePriceOffers = useMemo(() => offers
     .filter(offer => Number.isFinite(offer.price) && Boolean(offer.priceLabel) && offer.priceLabel !== "Цена в каталога")
     .filter(offer => (period === "all" || offer.period === period) && (storeFilter === "all" || offer.storeName === storeFilter))
@@ -138,7 +139,6 @@ export default function Home() {
     : []), [visiblePriceOffers, lowestPriceOffer]);
 
   const sourceStores = useMemo(() => [...new Set(sourceMatches.map(match => match.storeName))], [sourceMatches]);
-  const resultStoreCount = useMemo(() => new Set(visibleSourceMatches.map(match => match.storeName)).size, [visibleSourceMatches]);
   const shownStores = stores.slice(0, 14);
 
   const submitSearch = () => {
@@ -169,15 +169,15 @@ export default function Home() {
           <div>
             <p><b>1. Търси директно в каталозите.</b> Заявката отива към katalozi-bg.info и връща актуалните брошури.</p>
             <p><b>2. Филтрирай резултатите.</b> Избери магазин, категория или период, за да стесниш брошурите.</p>
-            <p><b>3. Виж брошурата тук.</b> Натисни корицата за преглед на страницата в прозорец; можеш да го затвориш или отделно да отвориш оригиналния резултат.</p>
+            <p><b>3. Виж брошурата тук.</b> Натисни картата за преглед на страницата с попадението в прозорец; можеш да го затвориш или отделно да отвориш оригиналния резултат.</p>
           </div>
         </details>
       </section>
 
       <section className="metrics">
-        <div><span>МАГАЗИНИ</span><strong>{stores.length || 66}</strong><small>в каталожния източник</small></div>
+        <div><span>КАТАЛОЖНИ ИЗТОЧНИЦИ</span><strong>{stores.length || 66}</strong><small>в каталожния сайт</small></div>
         <div><span>НАМЕРЕНИ БРОШУРИ</span><strong>{query.trim() && !loadingResults ? visibleSourceMatches.length : "—"}</strong><small>текущо търсене</small></div>
-        <div><span>МАГАЗИНИ В РЕЗУЛТАТИТЕ</span><strong>{query.trim() && !loadingResults ? resultStoreCount : "—"}</strong><small>с попадение за търсенето</small></div>
+        <div className="best-price-metric"><span>НАЙ-НИСКА ЦЕНА</span><strong>{query.trim() && !loadingResults ? lowestPriceOffer?.priceLabel || "—" : "—"}</strong><small>{query.trim() && !loadingResults ? lowestPriceOffer ? `от ${lowestPriceOffer.storeName}` : "няма разпозната цена" : "задай търсене"}</small></div>
       </section>
 
       <div className="content-grid">
@@ -195,11 +195,16 @@ export default function Home() {
             : searchError ? <div className="empty search-error"><Search size={30} /><h3>Външният каталог временно не отговаря</h3><p>{searchError}</p><button className="retry-search" onClick={submitSearch}>Опитай отново</button></div>
             : visibleSourceMatches.length > 0 ? <div className="source-card-grid">{visibleSourceMatches.map(match => {
               const isCheapest = cheapestCatalogIds.has(match.id);
+              const expirationDate = match.expirationDate.replace(" ", "T");
+              const expirationTime = Date.parse(expirationDate.endsWith("Z") ? expirationDate : `${expirationDate}Z`);
+              const daysRemaining = Number.isFinite(expirationTime) ? Math.ceil((expirationTime - Date.now()) / 86_400_000) : 0;
               return <button type="button" className={`source-card ${isCheapest ? "is-cheapest" : ""}`} onClick={() => setActiveCatalog(match)} aria-label={`Преглед на ${match.storeName}, страница ${match.page}`} key={match.id}>
                 <div className="source-card-image">
                   <img src={match.imageUrl} alt={`${match.storeName} — страница ${match.page}`} loading="lazy" />
+                  <img className="source-cover-thumb" src={match.coverImageUrl} alt="" loading="lazy" />
                   <span className="page-tag">Стр. {match.page}</span>
-                  {match.hits > 1 && <span className="more-hits">Още {match.hits - 1} попадения</span>}
+                  {match.hits > 1 && <span className="more-hits">Още {match.hits - 1} резултата</span>}
+                  {daysRemaining > 1 && <span className="source-days">още {daysRemaining} дни</span>}
                   <span className={`source-status ${match.period}`}>{match.statusLabel}</span>
                   {isCheapest && <span className="cheapest-card-badge"><Trophy size={12} /> НАЙ-ЕВТИНО</span>}
                 </div>
