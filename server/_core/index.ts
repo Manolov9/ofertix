@@ -23,23 +23,26 @@ async function startServer() {
     void (async () => {
       const sourceMatches = query ? await searchSourceCatalogs(query) : [];
       const local = getCatalog(query, period, sort);
-      const sourceOffers = sourceMatches.filter(match => Number.isFinite(match.sourcePrice)).map(match => ({
-        id: `source-${match.id}-${match.page}`,
-        product: match.sourceText || query,
-        searchText: match.sourceText || query,
-        storeId: `source-${match.storeName}`,
-        storeName: match.storeName,
-        price: match.sourcePrice as number,
-        priceLabel: match.sourcePriceLabel || "Цена в каталога",
-        unit: "бр.",
-        period: match.period,
-        validLabel: match.expirationDate ? `до ${match.expirationDate.slice(0, 10)}` : "актуална брошура",
-        brochureUrl: match.pageUrl,
-        pageUrl: match.pageUrl,
-        source: "https://katalozi-bg.info/companies",
-        imageUrl: match.imageUrl,
-      }));
-      const offers = local.offers.length ? local.offers : sourceOffers.filter(offer => period === "all" || offer.period === period).sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
+      const sourceOffers = sourceMatches.flatMap(match => {
+        const hits = match.sourceHits?.length ? match.sourceHits : [{ id: `${match.id}-${match.page}`, page: match.page, text: match.sourceText || query, price: match.sourcePrice, priceLabel: match.sourcePriceLabel }];
+        return hits.map(hit => ({
+          id: `source-${match.id}-${hit.id}`,
+          product: hit.text,
+          searchText: hit.text,
+          storeId: `source-${match.storeName}`,
+          storeName: match.storeName,
+          price: hit.price ?? Number.POSITIVE_INFINITY,
+          priceLabel: hit.priceLabel || "Цена в каталога",
+          unit: "бр.",
+          period: match.period,
+          validLabel: match.expirationDate ? `до ${match.expirationDate.slice(0, 10)}` : "актуална брошура",
+          brochureUrl: match.url,
+          pageUrl: `https://katalozi-bg.info/catalogs/${match.id}/${hit.page}.jpg`,
+          source: "https://katalozi-bg.info/companies",
+          imageUrl: `https://katalozi-bg.info/catalogs/${match.id}/small/${hit.page}.jpg`,
+        }));
+      }).filter(offer => period === "all" || offer.period === period).sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
+      const offers = getSyncState().status === "success" && local.offers.length ? local.offers : sourceOffers.length ? sourceOffers : local.offers;
       res.json({ ...local, offers, sourceMatches });
     })().catch(error => res.status(502).json({ error: error instanceof Error ? error.message : "Source search failed" }));
   });

@@ -16,7 +16,8 @@ export type Offer = { id: string; product: string; searchText: string; storeId: 
 export type SyncState = { status: "idle" | "running" | "success" | "error"; stage: string; startedAt?: string; finishedAt?: string; storesProcessed: number; brochuresProcessed: number; offersProcessed: number; message: string; };
 
 const sourceUrl = "https://katalozi-bg.info/companies";
-export type SourceCatalogMatch = { id: string; url: string; query: string; page: number; imageUrl: string; pageUrl: string; storeName: string; catalogTitle: string; hits: number; expirationDate: string; statusLabel: string; period: OfferPeriod; sourceText?: string; sourcePrice?: number; sourcePriceLabel?: string };
+export type SourceHit = { id: string; page: number; text: string; price?: number; priceLabel?: string };
+export type SourceCatalogMatch = { id: string; url: string; query: string; page: number; imageUrl: string; pageUrl: string; storeName: string; catalogTitle: string; hits: number; expirationDate: string; statusLabel: string; period: OfferPeriod; sourceText?: string; sourcePrice?: number; sourcePriceLabel?: string; sourceHits?: SourceHit[] };
 const sourceSearchCache = new Map<string, SourceCatalogMatch[]>();
 const fallbackSlugs = [
   [151,"АВС Строителен хипермаркет","abc.stroitelen.hipermarket"],[25,"Aiko","Aiko"],[53,"Alati","Alati"],[52,"Avon","Avon"],[36,"Bagira","Bagira"],[35,"BAUHAUS","BAUHAUS"],[7,"Billa","Billa"],[94,"BulMag","BulMag"],[124,"CBA Bolero","cba_bolero"],[101,"CBA Kome","CBAKome"],[42,"Como","Como"],[118,"Comsed","Comsed"],[48,"Densi","Densi"],[147,"DS Home","DS%20Home"],[105,"Edea","Edea"],[111,"Em Design","Em%20Design"],[32,"Enikom","Enikom"],[16,"Fantastico","Fantastico"],[67,"GOLD-APOLO","GOLD-APOLO"],[56,"Hit Hypermarket","hit%20hypermarket"],[22,"HomeMax","HomeMax"],[26,"JYSK","JYSK"],[103,"Kam Market","Kam%20Market"],[17,"Kaufland","Kaufland"],[50,"Krez","Krez"],[71,"Leksi","Leksi"],[6,"Lidl","Lidl"],[27,"Lilly Drogerie","Lilly%20Drogerie"],[154,"MAG ITALIA","MAG%20ITALIA"],[19,"Магазини Дар","Magazini%20Dar"],[55,"Malmuk","Malmuk"],[21,"MASTERHAUS","MASTERHAUS"],[76,"Мебели Лазур","mebeli%20lazur"],[38,"Merkanto","Merkanto"],[1,"Metro","Metro"],[31,"Mömax","M%C3%B6max"],[12,"Mr.Bricolage","Mr.Bricolage"],[58,"My Market","My%20Market"],[73,"Paconi","Paconi"],[11,"Praktiker","Praktiker"],[34,"PRAKTIS","PRAKTIS"],[78,"ProMarket","ProMarket"],[117,"Randi OOD","Randi%20OOD"],[33,"Remedium","Remedium"],[20,"Rila Market","Rila%20Market"],[135,"Siko","Siko"],[133,"Stop4eto","Stop4eto"],[61,"Supermarkets CBA","Supermarkets%20cba"],[128,"SOpharmacy","S%D0%9Epharmacy"],[45,"T market","T%20market"],[2,"Technomarket","Technomarket"],[3,"Technopolis","Technopolis"],[155,"TEDi","TEDi"],[40,"Temax","Temax"],[68,"Videnov","Videnov"],[23,"Vivacom","Vivacom"],[5,"Zora","Zora"],[156,"Хасково Маркет","%D0%A5%D0%B0%D1%81%D0%BA%D0%BE%20%D0%9C%D0%B0%D1%80%D0%BA%D0%B5%D1%82"],[37,"Магазин 37","37"],[8,"Магазин 8","8"],[132,"Магазин 132","132"],[150,"Магазин 150","150"],[29,"Магазин 29","29"],[110,"Магазин 110","110"],[82,"Магазин 82","82"],[70,"Магазин 70","70"]
@@ -63,7 +64,7 @@ export async function searchSourceCatalogs(query: string): Promise<SourceCatalog
     const decodedHtml = html.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
     for (const card of decodedHtml.matchAll(/<search-thumbnail\s+:index='([^']+)'/gi)) {
       try {
-        const data = JSON.parse(card[1]) as { catalog_id: number; page: number; imagePath?: string; catalogUrl?: string; innerHits?: unknown; catalog?: { expiration_date?: string; title?: string; company?: { bgName?: string } } };
+        const data = JSON.parse(card[1]) as { catalog_id: number; page: number; imagePath?: string; catalogUrl?: string; line?: string; data?: { text?: string }; innerHits?: Array<{ _id?: string; _source?: { page?: number; line?: string; data?: { text?: string } } }>; catalog?: { expiration_date?: string; title?: string; company?: { bgName?: string } } };
         const id = String(data.catalog_id);
         const page = Number(data.page);
         const expirationDate = data.catalog?.expiration_date || "";
@@ -71,11 +72,18 @@ export async function searchSourceCatalogs(query: string): Promise<SourceCatalog
         const days = (expiration - Date.now()) / 86_400_000;
         const period: OfferPeriod = expiration < Date.now() ? "ended" : days <= 7 ? "this-week" : "next-week";
         const statusLabel = expiration < Date.now() ? "Изтекла" : days <= 1 ? "Изтича" : "Скоро";
-        const hits = Array.isArray(data.innerHits) ? data.innerHits.length : 1;
-        const sourceText = normalize((data as { line?: string; data?: { text?: string } }).line || (data as { data?: { text?: string } }).data?.text || normalizedQuery);
+        const hitRows = Array.isArray(data.innerHits) ? data.innerHits : [];
+        const sourceText = normalize(data.line || data.data?.text || normalizedQuery);
         const sourcePrice = parseCatalogPrice(sourceText);
+        const sourceHits = hitRows.map((hit, index) => {
+          const text = normalize(hit._source?.line || hit._source?.data?.text || normalizedQuery);
+          const price = parseCatalogPrice(text);
+          return { id: String(hit._id || `${id}-${index}`), page: Number(hit._source?.page || page), text, price: price?.price, priceLabel: price?.priceLabel };
+        }).filter(hit => hit.text.length > 0 && matchesQuery(hit.text, normalizedQuery));
+        const relevantHits = sourceHits.length ? sourceHits : [{ id: `${id}-${page}`, page, text: sourceText, price: sourcePrice?.price, priceLabel: sourcePrice?.priceLabel }];
+        const hits = relevantHits.length;
         const pageUrl = `https://katalozi-bg.info/catalogs/${id}/${page}.jpg`;
-        matches.push({ id, url: `https://katalozi-bg.info/search/${id}?query=${encodeURIComponent(normalizedQuery)}`, query: normalizedQuery, page, pageUrl, imageUrl: `https://katalozi-bg.info/catalogs/${id}/small/${page}.jpg`, storeName: data.catalog?.company?.bgName || "Магазин", catalogTitle: data.catalog?.title || `Каталог ${id}`, hits, expirationDate, statusLabel, period, sourceText, sourcePrice: sourcePrice?.price, sourcePriceLabel: sourcePrice?.priceLabel });
+        matches.push({ id, url: `https://katalozi-bg.info/search/${id}?query=${encodeURIComponent(normalizedQuery)}`, query: normalizedQuery, page, pageUrl, imageUrl: `https://katalozi-bg.info/catalogs/${id}/small/${page}.jpg`, storeName: data.catalog?.company?.bgName || "Магазин", catalogTitle: data.catalog?.title || `Каталог ${id}`, hits, expirationDate, statusLabel, period, sourceText, sourcePrice: sourcePrice?.price, sourcePriceLabel: sourcePrice?.priceLabel, sourceHits: relevantHits });
       } catch { /* keep fallback link parsing below */ }
     }
     if (matches.length) {
