@@ -172,6 +172,253 @@ docker run -d --name ofertix \
 
 MySQL не е включен в този container. Осигури отделна MySQL/MariaDB услуга и задай достъпен от container-а host в `DATABASE_URL` (не използвай `127.0.0.1`, освен ако базата действително работи в същия container). Изпълни миграциите с достъпна база преди да разчиташ на постоянен каталог.
 
+## Подробен пример: Linux VPS с вече инсталиран Node.js
+
+Този сценарий е за Ubuntu/Debian VPS, на който Node.js вече е наличен. За постоянен индекс трябва да добавиш MySQL/MariaDB; за четене на изображенията от брошурите е необходим и Tesseract OCR. За публичен сайт с домейн са нужни още reverse proxy и HTTPS. Примерът използва MySQL на същия VPS, `systemd` за процеса и Nginx + Let's Encrypt за HTTPS. Ако вече имаш управлявана MySQL услуга, пропусни локалното инсталиране на MySQL и използвай нейните host, user, password и database настройки.
+
+### Стъпка 1: провери Node.js и инсталирай нужните системни пакети
+
+Провери версиите:
+
+```bash
+node --version
+corepack --version
+```
+
+Проектът използва Node.js 22 във `Dockerfile`; използвай Node.js 22 или съвместима по-нова версия. Ако Node.js вече е инсталиран, не е нужно да го инсталираш повторно. Ако е инсталиран само чрез `nvm`, запомни кой Linux потребител го е инсталирал — услугата `systemd` трябва да вижда същия Node.js и pnpm в своя `PATH`.
+
+Инсталирай MySQL, Git и OCR пакетите:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y mysql-server git \
+  tesseract-ocr tesseract-ocr-bul tesseract-ocr-eng
+sudo systemctl enable --now mysql
+sudo mysql_secure_installation
+```
+
+`mysql_secure_installation` е интерактивен помощник за базова защита на MySQL. При MariaDB използвай съответните пакети/услуга на дистрибуцията, например `mariadb-server` и `mariadb`.
+
+### Стъпка 2: създай празна база и отделен потребител за приложението
+
+Отвори MySQL локално:
+
+```bash
+sudo mysql
+```
+
+В MySQL конзолата изпълни командите по-долу. Замени `ЗАМЕНИ-С-ПАРОЛА` със силна, уникална парола:
+
+```sql
+CREATE DATABASE ofertix CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'ofertix'@'localhost' IDENTIFIED BY 'ЗАМЕНИ-С-ПАРОЛА';
+GRANT ALL PRIVILEGES ON ofertix.* TO 'ofertix'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+```
+
+Тествай връзката:
+
+```bash
+mysql -u ofertix -p -h 127.0.0.1 ofertix -e 'SELECT 1;'
+```
+
+При базата на същия VPS не отваряй порт `3306` към публичния интернет. Ако използваш външна/управлявана база, ограничи достъпа ѝ до IP адреса на VPS-а и следвай указанията на доставчика; в такъв случай host-ът в `DATABASE_URL` няма да бъде `127.0.0.1`.
+
+### Стъпка 3: изтегли приложението и инсталирай зависимостите
+
+Изпълнявай deployment командите като обикновен потребител, не като `root`. Примерът приема, че този потребител ще притежава файловете в `/opt/ofertix`:
+
+```bash
+sudo mkdir -p /opt/ofertix
+sudo chown "$USER":"$(id -gn)" /opt/ofertix
+git clone https://github.com/Manolov9/ofertix.git /opt/ofertix
+cd /opt/ofertix
+corepack enable
+corepack prepare pnpm@10.18.0 --activate
+pnpm install --frozen-lockfile
+```
+
+Ако repository-то вече е клонирано в `/opt/ofertix`, не повтаряй `git clone`; влез в директорията му и продължи. Потвърди, че `node --version` показва Node.js 22 или съвместима по-нова версия.
+
+### Стъпка 4: настрой `.env`
+
+В root директорията на проекта създай файл:
+
+```bash
+cd /opt/ofertix
+nano .env
+```
+
+Примерно съдържание за MySQL на същия VPS:
+
+```env
+DATABASE_URL=mysql://ofertix:URL_ENCODED_PASSWORD@127.0.0.1:3306/ofertix
+PORT=3000
+NODE_ENV=production
+OCR_BATCH_SIZE=12
+OCR_BATCH_CONCURRENCY=6
+```
+
+Замени `URL_ENCODED_PASSWORD` с паролата от стъпка 2. Ако паролата съдържа специални URL символи като `@`, `:`, `/`, `#` или `%`, URL-encode-ни ги в connection string-а. Пази `.env` извън Git и ограничи достъпа:
+
+```bash
+chmod 600 .env
+```
+
+При управлявана база промени адреса в `DATABASE_URL` според доставчика. Основните функции за публично търсене и синхронизация не изискват Manus OAuth secrets.
+
+### Стъпка 5: създай таблиците и изгради приложението
+
+От `/opt/ofertix` изпълни миграциите, които вече са включени в repository-то, след което изгради production bundle:
+
+```bash
+pnpm db:migrate
+pnpm build
+```
+
+### Стъпка 6: тествай приложението локално на VPS-а
+
+Стартирай приложението временно в терминала:
+
+```bash
+pnpm start
+```
+
+От втори SSH прозорец провери health endpoint-а:
+
+```bash
+curl http://127.0.0.1:3000/api/health
+```
+
+Очакваният отговор е `{"status":"ok"}`. След успешната проверка спри временния процес с `Ctrl+C`; по-нататък `systemd` ще го стартира постоянно.
+
+### Стъпка 7: настрой `systemd`, за да се стартира автоматично
+
+Услугата трябва да работи под потребителя, който има достъп до проекта, `.env`, Node.js и pnpm. Провери пътищата:
+
+```bash
+whoami
+id -gn
+command -v node
+command -v pnpm
+```
+
+Създай `/etc/systemd/system/ofertix.service`:
+
+В примерната секция `After`/`Wants` е посочена услугата `mysql.service`. Ако използваш MariaDB, замени я с името на MariaDB услугата на дистрибуцията (обикновено `mariadb.service`). Ако базата е външна/управлявана, премахни `Wants=mysql.service` и зависимостта от локалната база.
+
+```ini
+[Unit]
+Description=Ofertix product search
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=ЗАМЕНИ_С_LINUX_ПОТРЕБИТЕЛ
+Group=ЗАМЕНИ_С_LINUX_ГРУПА
+WorkingDirectory=/opt/ofertix
+EnvironmentFile=/opt/ofertix/.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env pnpm start
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Замени потребителя и групата с резултатите от `whoami` и `id -gn`. Ако `command -v node` или `command -v pnpm` сочи към `~/.nvm/...`, добави директорията, която съдържа тези изпълними файлове, в `Environment=PATH=...` и използвай същия потребител, който има тази `nvm` инсталация. `systemd` не зарежда интерактивния shell профил автоматично.
+
+Запази файла и включи услугата:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now ofertix
+sudo systemctl status ofertix --no-pager
+```
+
+Полезни команди за проверка:
+
+```bash
+sudo journalctl -u ofertix -f
+sudo systemctl restart ofertix
+sudo systemctl stop ofertix
+```
+
+### Стъпка 8: свържи домейн, Nginx и HTTPS
+
+За публичен сайт настрой DNS `A` запис на домейна (например `ofertix.example.com`) към публичния IPv4 адрес на VPS-а. Добави `AAAA` запис само ако IPv6 е конфигуриран и достъпен. Изчакай DNS името да сочи към сървъра.
+
+Инсталирай Nginx и Certbot:
+
+```bash
+sudo apt-get install -y nginx certbot python3-certbot-nginx
+```
+
+Създай `/etc/nginx/sites-available/ofertix` и замени примерния домейн:
+
+```nginx
+server {
+    listen 80;
+    server_name ofertix.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Активирай настройката и издай сертификат:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/ofertix /etc/nginx/sites-enabled/ofertix
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d ofertix.example.com
+```
+
+Във firewall-а на VPS доставчика и/или `ufw` разреши входящи връзки само за необходимите услуги: SSH, HTTP `80` и HTTPS `443`. **Не отваряй MySQL `3306` към целия интернет.** Ако активираш `ufw`, първо разреши SSH порта, който използваш, за да не загубиш отдалечения достъп.
+
+След това отвори `https://ofertix.example.com`, натисни **„Синхронизирай“** и следи процеса с `sudo journalctl -u ofertix -f`. Първото индексиране може да отнеме време, защото Tesseract обработва изображенията на каталозите.
+
+### Стъпка 9: backup, възстановяване и обновяване
+
+Направи ръчен backup на базата:
+
+```bash
+mysqldump --single-transaction -u ofertix -p ofertix \
+  > "$HOME/ofertix-$(date +%F).sql"
+```
+
+Командата ще поиска паролата интерактивно. Копирай backup файла и извън VPS-а; repository-то съдържа кода, но не и каталожните данни. За restore към празна база използвай:
+
+```bash
+mysql -u ofertix -p ofertix < "$HOME/ofertix-YYYY-MM-DD.sql"
+```
+
+При следващо обновяване на кода изпълни като deployment потребителя:
+
+```bash
+cd /opt/ofertix
+git pull --ff-only
+pnpm install --frozen-lockfile
+pnpm db:migrate
+pnpm build
+sudo systemctl restart ofertix
+sudo systemctl status ofertix --no-pager
+```
+
+При публична инсталация имай предвид, че посетителите могат да стартират sync, а OCR използва CPU и памет. Остави една backend инстанция, освен ако не добавиш distributed lock/job worker, и обмисли rate limiting за публичния sync endpoint.
+
 ## OCR производителност
 
 Текущите стойности по подразбиране са партиди до 12 страници (`OCR_BATCH_SIZE=12`) и до 6 едновременно изпълнявани Tesseract задачи (`OCR_BATCH_CONCURRENCY=6`). Кодът ограничава стойностите съответно до максимум 12 и 8. При по-малък VPS можеш да намалиш паралелизма, например:
