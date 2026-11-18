@@ -7,6 +7,7 @@ import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { getCatalog, getSyncState, startSync } from "../catalog";
 
 async function startServer() {
   const app = express();
@@ -15,6 +16,19 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+  app.get("/api/catalog", (req, res) => {
+    const query = typeof req.query.q === "string" ? req.query.q : "";
+    const period = typeof req.query.period === "string" ? req.query.period : "all";
+    const sort = typeof req.query.sort === "string" ? req.query.sort : "price-asc";
+    res.json(getCatalog(query, period, sort));
+  });
+  app.get("/api/sync/status", (_req, res) => res.json(getSyncState()));
+  app.post("/api/sync", (_req, res) => {
+    const state = getSyncState();
+    if (state.status === "running") return res.status(409).json(state);
+    void startSync();
+    res.status(202).json(getSyncState());
+  });
   app.get("/api/platform/config.js", (_req, res) => {
     res.set("Cache-Control", "no-store").type("application/javascript").send(publicPlatformScript());
   });
