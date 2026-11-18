@@ -9,8 +9,11 @@ import { promisify } from "node:util";
 import { activateCatalogRun, appendCatalogOffers, loadCatalogSnapshot, persistCatalogMetadata, persistSyncState } from "./db";
 
 const execFileAsync = promisify(execFile);
-const OCR_BATCH_SIZE = Math.min(8, Math.max(1, Number(process.env.OCR_BATCH_SIZE || 6)));
-const OCR_BATCH_CONCURRENCY = 3;
+// Six Tesseract workers fit comfortably in the 24 GB Cloud runtime and roughly
+// halve wall-clock time versus the old conservative 3-worker configuration.
+// Both values remain configurable for smaller deployments.
+const OCR_BATCH_SIZE = Math.min(12, Math.max(1, Number(process.env.OCR_BATCH_SIZE || 12)));
+const OCR_BATCH_CONCURRENCY = Math.min(8, Math.max(1, Number(process.env.OCR_BATCH_CONCURRENCY || 6)));
 export type Brochure = { id: string; storeId: string; title: string; url: string; period: OfferPeriod; rawDate: string; thumbnailUrl?: string; pageUrls: string[]; };
 export type Offer = { id: string; product: string; searchText: string; storeId: string; storeName: string; price: number; currency?: "BGN" | "EUR"; priceLabel: string; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; pageUrl: string; source: string; imageUrl?: string; };
 export type SyncState = { status: "idle" | "running" | "success" | "error"; stage: string; startedAt?: string; finishedAt?: string; storesProcessed: number; brochuresProcessed: number; offersProcessed: number; message: string; };
