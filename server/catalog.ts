@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { activateCatalogRun, appendCatalogOffers, loadCatalogSnapshot, persistCatalogMetadata, persistSyncState } from "./db";
+import { isCatalogCategoryId } from "@shared/catalog-categories";
 
 const execFileAsync = promisify(execFile);
 // Six Tesseract workers fit comfortably in the 24 GB Cloud runtime and roughly
@@ -51,6 +52,11 @@ export async function hydrateCatalog() {
 }
 
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+export function buildSourceSearchUrl(query: string, category = "") {
+  const params = new URLSearchParams({ query: normalize(query) });
+  if (isCatalogCategoryId(category)) params.set("category", category);
+  return `https://katalozi-bg.info/search?${params.toString()}`;
+}
 async function fetchText(url: string, timeoutMs = 20_000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -61,14 +67,15 @@ async function fetchText(url: string, timeoutMs = 20_000) {
   } finally { clearTimeout(timer); }
 }
 
-export async function searchSourceCatalogs(query: string): Promise<SourceCatalogMatch[]> {
+export async function searchSourceCatalogs(query: string, category = ""): Promise<SourceCatalogMatch[]> {
   const normalizedQuery = normalize(query);
   if (!normalizedQuery) return [];
-  const cacheKey = normalizedQuery.toLocaleLowerCase("bg-BG");
+  const categoryId = isCatalogCategoryId(category) ? category : "";
+  const cacheKey = `${normalizedQuery.toLocaleLowerCase("bg-BG")}:${categoryId || "all"}`;
   const cached = sourceSearchCache.get(cacheKey);
   if (cached) return cached;
   try {
-    const html = await fetchText(`https://katalozi-bg.info/search?query=${encodeURIComponent(normalizedQuery)}`);
+    const html = await fetchText(buildSourceSearchUrl(normalizedQuery, categoryId));
     const matches: SourceCatalogMatch[] = [];
     const decodedHtml = html.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
     for (const card of decodedHtml.matchAll(/<search-thumbnail\s+:index='([^']+)'/gi)) {
@@ -92,7 +99,8 @@ export async function searchSourceCatalogs(query: string): Promise<SourceCatalog
         const relevantHits = sourceHits.length ? sourceHits : [{ id: `${id}-${page}`, page, text: sourceText, price: sourcePrice?.price, priceLabel: sourcePrice?.priceLabel }];
         const hits = relevantHits.length;
         const pageUrl = `https://katalozi-bg.info/catalogs/${id}/${page}.jpg`;
-        matches.push({ id, url: `https://katalozi-bg.info/search/${id}?query=${encodeURIComponent(normalizedQuery)}`, query: normalizedQuery, page, pageUrl, imageUrl: `https://katalozi-bg.info/catalogs/${id}/small/${page}.jpg`, storeName: data.catalog?.company?.bgName || "Магазин", catalogTitle: data.catalog?.title || `Каталог ${id}`, hits, expirationDate, statusLabel, period, sourceText, sourcePrice: sourcePrice?.price, sourcePriceLabel: sourcePrice?.priceLabel, sourceHits: relevantHits });
+        const imageUrl = `https://katalozi-bg.info/catalogs/${id}/small/1.jpg`;
+        matches.push({ id, url: `https://katalozi-bg.info/search/${id}?query=${encodeURIComponent(normalizedQuery)}`, query: normalizedQuery, page, pageUrl, imageUrl, storeName: data.catalog?.company?.bgName || "Магазин", catalogTitle: data.catalog?.title || `Каталог ${id}`, hits, expirationDate, statusLabel, period, sourceText, sourcePrice: sourcePrice?.price, sourcePriceLabel: sourcePrice?.priceLabel, sourceHits: relevantHits });
       } catch { /* keep fallback link parsing below */ }
     }
     if (matches.length) {

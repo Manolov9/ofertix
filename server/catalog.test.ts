@@ -1,7 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { extractPageOffers, firstImageUrl, formatPriceLabel, getCatalog, matchesQuery, parseCatalogPrice } from "./catalog";
+import { buildSourceSearchUrl, extractPageOffers, firstImageUrl, formatPriceLabel, getCatalog, matchesQuery, parseCatalogPrice } from "./catalog";
+import { catalogCategories, isCatalogCategoryId } from "@shared/catalog-categories";
 
 describe("Ofertix OCR catalog index", () => {
+  it("keeps the seven source category labels and IDs in their displayed order", () => {
+    expect(catalogCategories.map(category => [category.id, category.label])).toEqual([
+      ["1", "Храни и Битови Стоки"],
+      ["2", "Козметика"],
+      ["3", "Бяла и черна техника"],
+      ["4", "Разни"],
+      ["5", "Мобилни"],
+      ["6", "Строителство"],
+      ["7", "Мебели"],
+    ]);
+    expect(isCatalogCategoryId("1")).toBe(true);
+    expect(isCatalogCategoryId("8")).toBe(false);
+  });
+
+  it("forwards the selected source category and keeps the unfiltered search URL clean", () => {
+    const categorized = new URL(buildSourceSearchUrl("Кисело мляко", "1"));
+    expect(categorized.searchParams.get("query")).toBe("Кисело мляко");
+    expect(categorized.searchParams.get("category")).toBe("1");
+    const unfiltered = new URL(buildSourceSearchUrl("Кисело мляко"));
+    expect(unfiltered.searchParams.has("category")).toBe(false);
+    expect(new URL(buildSourceSearchUrl("Кисело мляко", "999")).searchParams.has("category")).toBe(false);
+  });
+
   it("matches products, descriptions and case-insensitive substrings", () => {
     expect(matchesQuery("Кафе мляно 250 г", "кафе")).toBe(true);
     expect(matchesQuery("Промоция: КАФЕ арабика", "КАФЕ")).toBe(true);

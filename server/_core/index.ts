@@ -8,6 +8,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { getCatalog, getSyncState, hydrateCatalog, isSyncActive, searchSourceCatalogs, startSync } from "../catalog";
+import { isCatalogCategoryId } from "@shared/catalog-categories";
 
 async function startServer() {
   const app = express();
@@ -20,9 +21,18 @@ async function startServer() {
     const query = typeof req.query.q === "string" ? req.query.q : "";
     const period = typeof req.query.period === "string" ? req.query.period : "all";
     const sort = typeof req.query.sort === "string" ? req.query.sort : "price-asc";
+    const requestedCategory = typeof req.query.category === "string" ? req.query.category : "";
+    const category = isCatalogCategoryId(requestedCategory) ? requestedCategory : "";
     void (async () => {
-      const sourceMatches = query ? await searchSourceCatalogs(query) : [];
+      const sourceMatches = query ? await searchSourceCatalogs(query, category) : [];
       const local = getCatalog(query, period, sort);
+      const categoryCatalogIds = new Set(sourceMatches.map(match => match.id));
+      const localOffers = category
+        ? local.offers.filter(offer => {
+            const catalogId = offer.pageUrl.match(/\/catalogs\/(\d+)\//)?.[1];
+            return catalogId !== undefined && categoryCatalogIds.has(catalogId);
+          })
+        : local.offers;
       const sourceOffers = sourceMatches.flatMap(match => {
         const hits = match.sourceHits?.length ? match.sourceHits : [{ id: `${match.id}-${match.page}`, page: match.page, text: match.sourceText || query, price: match.sourcePrice, priceLabel: match.sourcePriceLabel }];
         return hits.map(hit => ({
@@ -42,7 +52,7 @@ async function startServer() {
           imageUrl: `https://katalozi-bg.info/catalogs/${match.id}/small/${hit.page}.jpg`,
         }));
       }).filter(offer => period === "all" || offer.period === period).sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
-      const offers = getSyncState().status === "success" && local.offers.length ? local.offers : sourceOffers.length ? sourceOffers : local.offers;
+      const offers = getSyncState().status === "success" && localOffers.length ? localOffers : sourceOffers.length ? sourceOffers : category ? localOffers : local.offers;
       res.json({ ...local, offers, sourceMatches });
     })().catch(error => res.status(502).json({ error: error instanceof Error ? error.message : "Source search failed" }));
   });
