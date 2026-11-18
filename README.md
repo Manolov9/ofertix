@@ -1,142 +1,143 @@
-# Офертикс — търсачка и сравнение на оферти
+# Офертикс — пълен индекс на продукти от брошури
 
-Офертикс е български уеб агрегатор за магазини, каталози и промоционални оферти. Приложението зарежда магазина̀та от публичния каталог на [katalozi-bg.info/companies](https://katalozi-bg.info/companies), пази оригиналния им ред, показва актуалните брошури и позволява търсене на продукт между всички налични резултати.
+Офертикс е търсачка за всички разпознати продуктови редове от публичните брошури на [katalozi-bg.info](https://katalozi-bg.info/companies). Няма фиктивен demo каталог: продуктите се създават при натискане на бутона **„Синхронизирай“** чрез реално прочитане на страниците на брошурите.
 
-Публична версия: [https://ofertix-hytuc6fq.manus.space](https://ofertix-hytuc6fq.manus.space)
+Публичен сайт: [https://ofertix-hytuc6fq.manus.space](https://ofertix-hytuc6fq.manus.space)
 
-## Основни възможности
+## Как се използва от потребителя
 
-Потребителят може да търси с малки или главни букви. Търсенето е по част от текста, така че `кока кола`, `КОКА КОЛА`, `кола` и други фрагменти намират съвпадащ продукт. Резултатите се сортират по възходяща или низходяща цена и най-ниската цена се откроява с етикет „НАЙ-ЕВТИНО“.
+1. Натисни **„Синхронизирай“** в картата „Дневни брошури“.
+2. Докато се обработват магазините и страниците, бутонът е сив и деактивиран. Статусът показва текущия етап и броя вече разчетени продуктови редове.
+3. След успешен край бутонът отново е зелен и резултатите са налични за търсене.
+4. Въведи например `кафе`, `кисело мляко` или `кока кола`. Търсенето е без значение от главни/малки букви и търси частичен текст не само в заглавието, а и в целия OCR контекст на реда. Така `кафе` намира всяко разчетено кафе, включително когато думата е в описание.
+5. Всеки резултат има цена, магазин, период, миниатюра от същата страница и бутон **„Виж“**, който отваря точната high-resolution страница на брошурата.
 
-Има филтри за текущата седмица, другата седмица и приключили оферти. Всяка оферта показва продукт, магазин, цена, стара цена, период, връзка към източника и квадратна миниатюра от страницата на брошурата, когато източникът публикува такава.
+## Цени
 
-Синхронизацията е ръчна. Бутонът се казва „Синхронизирай“, в нормално/готово състояние е зелен, а по време на изпълнение става сив и се деактивира, за да не се стартират две паралелни обновявания. След приключване се показват етапът, броят магазини, броят каталози, началото, краят и резултатното съобщение.
+`priceLabel` е текстът, който се показва на потребителя. Ако каталогът има само евро, се показва само евро, например `4,99 €`. Ако има евро и левове, се показват и двете с лек разделител: `4,99 € / 9,76 лв.`. Не се използва стара цена като втора валута.
 
-## Стартиране локално
+За сортиране `price` е нормализирана числова стойност в лева: при EUR-only оферта се използва официалният курс 1 EUR = 1.95583 BGN, а при EUR + BGN се използва стойността в лева. Така „Най-евтино“ сравнява коректно различните валути, без да променя показвания оригинален етикет.
 
-Изисква се Node.js и pnpm 10.18.0 или по-нова съвместима версия.
+## Реално извличане
 
-```bash
-pnpm install
-pnpm dev
+HTML страниците на източника не съдържат продуктов JSON feed. Те публикуват страниците на брошурите като изображения. При sync adapter-ът:
+
+- зарежда всички магазини в оригиналния ред;
+- зарежда всички намерени брошури и всички `small/{page}.jpg` preview страници;
+- преобразува всяка страница към нейния full-size адрес `/catalogs/{catalogId}/{page}.jpg`;
+- изпълнява български + английски Tesseract OCR върху full-size страницата;
+- създава отделен продуктово-ценови запис за всеки разпознат ценови ред;
+- пази целия OCR контекст за substring търсене;
+- пази `pageUrl` за директно препращане и `imageUrl` към малката версия на същия page ID.
+
+Примерна двойка за една и съща страница:
+
+```text
+pageUrl:  https://katalozi-bg.info/catalogs/34848/1.jpg
+imageUrl: https://katalozi-bg.info/catalogs/34848/small/1.jpg
 ```
 
-Приложението слуша на `http://localhost:3000`. За production build:
-
-```bash
-pnpm check
-pnpm build
-pnpm start
-```
-
-`PORT` се уважава от development и production сървъра. За чист frontend build без backend има `pnpm dev:static` и `pnpm build:static`, но Ofertix изисква server режима за синхронизацията.
+Не се маркира sync като успешен само заради изтеглени заглавия: успехът е след края на OCR етапа. Ако отделна страница не може да бъде разчетена, останалите страници продължават, а статусът пази броя на реално създадените записи.
 
 ## API
 
-Всички API отговори са JSON.
+### `GET /api/catalog?q=&period=&sort=`
 
-### `GET /api/catalog`
+Връща всички оферти, съвпадащи с query параметъра. Полета на една оферта:
 
-Връща магазините, брошурите, филтрираните оферти, текущия статус и URL адреса на източника.
+- `product` — OCR-извлечен ред/продукт;
+- `searchText` — контекстът около реда за търсене в описания;
+- `price` — нормализирана стойност за сортиране;
+- `priceLabel` — оригинално показване на EUR/BGN;
+- `storeName`, `period`, `validLabel`;
+- `pageUrl` — точната full-size страница;
+- `imageUrl` — малка снимка от същата страница;
+- `brochureUrl` — страницата на самата брошура.
 
-Поддържани query параметри:
+Параметри:
 
-- `q` — текст за търсене; сравнява се case-insensitive и чрез substring match.
-- `period` — `all`, `this-week`, `next-week` или `ended`.
+- `q` — частичен, case-insensitive текст;
+- `period` — `all`, `this-week`, `next-week`, `ended`;
 - `sort` — `price-asc` или `price-desc`.
-
-Пример:
-
-```bash
-curl 'http://localhost:3000/api/catalog?q=%D0%BA%D0%BE%D0%BA%D0%B0%20%D0%BA%D0%BE%D0%BB%D0%B0&period=all&sort=price-asc'
-```
 
 ### `POST /api/sync`
 
-Стартира ръчна синхронизация. Ако вече има активна синхронизация, endpoint-ът връща HTTP `409`, вместо да създава втори процес. При нормален старт връща HTTP `202` и текущия статус.
+Стартира целия процес зад бутона „Синхронизирай“. Връща `202` при старт и `409`, ако вече има активна синхронизация. OCR worker-ите са ограничени, за да не се изчерпва паметта.
 
 ### `GET /api/sync/status`
 
-Връща текущото състояние:
+Връща:
 
 ```json
 {
   "status": "idle | running | success | error",
-  "stage": "текущ етап",
-  "startedAt": "ISO дата",
-  "finishedAt": "ISO дата",
+  "stage": "Разчитам продуктите от страница 120/3048…",
   "storesProcessed": 66,
   "brochuresProcessed": 90,
-  "offersProcessed": 9,
-  "message": "описание на резултата"
+  "offersProcessed": 1234,
+  "startedAt": "ISO date",
+  "finishedAt": "ISO date",
+  "message": "..."
 }
 ```
 
 ### `GET /api/health`
 
-Health check за runtime и deployment системата. Връща `{ "status": "ok" }`.
+Връща `{ "status": "ok" }`.
 
-## Как работи синхронизацията
+## Време за sync и стабилност
 
-Логиката се намира в `server/catalog.ts`. Първо се прочита публичната страница с магазини и се нормализират всички връзки `/company/{id}`. За магазини без текстов slug се използва резервното име по ID, за да се запазят всички видими 66 позиции. След това се посещават страниците на магазините с ограничена паралелност от осем worker-а и се извличат връзките `/catalogs/`.
+Източникът в текущия snapshot съдържа приблизително 3048 страници. Пълното OCR извличане е тежка операция и затова се изпълнява само след натискане на бутона, с видим прогрес. Production image-ът включва `tesseract-ocr`, `tesseract-ocr-bul` и `tesseract-ocr-eng`. Worker паралелността е ограничена до максимум 3 процеса по подразбиране чрез `OCR_WORKERS`, за да не се стига до OOM.
 
-За всяка намерена брошура се прочита страницата ѝ. Адаптерът приоритизира изображения от вида `/catalogs/{id}/small/{page}.jpg`, защото те са кратки preview изображения с достатъчна площ за четим продукт. Връзката се пази като двойка `brochureUrl` + `imageUrl` от една и съща страница; например `.../promo-katalog-Billa/34848` е свързана с `.../catalogs/34848/small/1.jpg`. Снимките се връщат като `thumbnailUrl` към брошурата и `imageUrl` към офертата. Интерфейсът ги визуализира в квадратен контейнер с `object-fit: cover`; ако липсва изображение, показва неутрално „без снимка“, без да измисля продуктова снимка.
+Търсенето и UI-то не показват фиктивни резултати преди реален sync. След успешно зареждане резултатите могат да бъдат стотици или хиляди; интерфейсът показва общия брой намерени записи и не ги свежда до един резултат на продукт.
 
-Оригиналният източник предоставя каталозите основно като брошурни страници/изображения, а не като готов продуктов JSON feed. Затова детайлните цени и продуктови редове трябва да се извличат от OCR/структурен parser в следващ слой, ако се изисква пълно автоматично разпознаване на всеки артикул. Текущият adapter е подготвен за това чрез полетата `product`, `price`, `oldPrice`, `priceLabel`, `unit`, `period`, `brochureUrl` и `imageUrl`. `price` е числова стойност за сортиране, а `priceLabel` е стойността за показване. Когато има две цени, интерфейсът ги изписва като `цена 1 лв. / цена 2 лв.`; при production OCR/parser `priceLabel` трябва да се попълва с точния оригинален текст от каталога.
-
-## База данни
-
-Проектът е инициализиран с управлявана MySQL база и Drizzle ORM. В момента starter схемата съдържа таблицата `users`, която обслужва стандартната Manus authentication основа. Тя има `id`, `openId`, `name`, `email`, `loginMethod`, `role`, `createdAt`, `updatedAt` и `lastSignedIn`.
-
-Каталожният adapter в текущата версия използва runtime memory за бързия публичен прототип. Това означава, че магазините, брошурите, офертите и sync статуса се зареждат при runtime и се обновяват при натискане на бутона. Няма скрити credentials в кода и няма втори локален database файл.
-
-За production persistence следва да се добавят следните Drizzle таблици:
-
-- `stores`: `id`, `sourceId`, `displayOrder`, `name`, `sourceUrl`, `logoUrl`, `isActive`, timestamps.
-- `brochures`: `id`, `storeId`, `sourceId`, `title`, `sourceUrl`, `period`, `validFrom`, `validTo`, `thumbnailUrl`, `syncedAt`.
-- `offers`: `id`, `brochureId`, `storeId`, `productName`, `normalizedName`, `price`, `oldPrice`, `unit`, `period`, `imageUrl`, `sourceUrl`, `syncedAt`.
-- `syncRuns`: `id`, `status`, `stage`, `startedAt`, `finishedAt`, `storesProcessed`, `brochuresProcessed`, `offersProcessed`, `message`.
-
-Препоръчителните индекси са `stores.displayOrder`, `brochures.storeId`, `brochures.period`, `offers.normalizedName`, `offers.price`, `offers.storeId` и `syncRuns.startedAt`. Така търсенето ще може да се изпълнява с database query вместо с in-memory filter, а историята на синхронизациите ще остава налична след рестарт.
-
-След добавяне на тези таблици миграцията се изпълнява с:
+## Стартиране и тестове
 
 ```bash
-pnpm db:push
+pnpm install
+pnpm dev
+pnpm check
+pnpm test
+pnpm build
 ```
 
-При production промени миграцията трябва да се прегледа и приложи контролирано чрез `pnpm db:migrate`. Не трябва да се съхраняват пълни HTML страници в MySQL; за изображения/големи файлове е по-подходящо object storage, а в базата се пази само стабилен URL и metadata.
+Unit tests в `server/catalog.test.ts` проверяват:
 
-## Структура на проекта
+- case-insensitive substring търсене;
+- търсене в OCR контекст;
+- EUR-only и EUR/BGN price labels;
+- правилно EUR към BGN сортиране;
+- full-size `pageUrl` и small thumbnail от същата страница;
+- липса на demo оферти преди реален sync.
 
-- `client/src/pages/Home.tsx` — основен dashboard, търсачка, филтри, офертни карти, миниатюри и manual sync бутон.
-- `client/src/index.css` — тъмната визуална система „Неонова борса“, responsive layout и state стилове за бутона.
-- `server/catalog.ts` — source adapter, синхронизация, substring search, period filtering и image extraction.
-- `server/_core/index.ts` — Express health, catalog и sync endpoints.
-- `drizzle/schema.ts` — Drizzle schema основа и users таблица.
-- `drizzle/` — миграции за управляваната MySQL база.
-- `public/manus-routes.json` — route manifest за `/`.
-- `plan.md` — приети дизайн и implementation решения.
-- `TODO.md` — проследяване на продуктовите резултати.
+## База данни и съхранение
 
-## Deployment и GitHub
+Проектът е инициализиран с управлявана MySQL база и Drizzle ORM. Starter схемата съдържа `users` за Manus authentication. Текущият OCR индекс е runtime state, защото синхронизацията се управлява от бутона и резултатите се изграждат отново при следващ sync.
 
-Production контейнерът се изгражда с `pnpm build`, а runtime entrypoint е `node dist/index.js`. Health path е `/api/health`. Последната версия е записана в managed canonical Git и е качена в private GitHub repository:
+За production persistence следва да се добавят:
+
+- `stores`: source ID, ред, име, URL, logo URL;
+- `brochures`: store ID, каталог URL, период, page count, thumbnail URL;
+- `offers`: brochure ID, product, OCR context, normalized price, original price label, currency, page URL, image URL;
+- `syncRuns`: start/end, stage, status, counts, error message.
+
+Препоръчителни индекси са `offers.normalizedName`, `offers.price`, `offers.storeId`, `offers.period`, `brochures.storeId` и `syncRuns.startedAt`. При добавяне на тези таблици се използва `pnpm db:push`, а production промени се прилагат контролирано с `pnpm db:migrate`.
+
+## Архитектура
+
+- `client/src/pages/Home.tsx` — търсене, всички резултати, цена, миниатюра, точен page link и sync UX.
+- `client/src/index.css` — responsive dashboard и state цветове на бутона.
+- `server/catalog.ts` — store/catalog crawler, page discovery, OCR, price parser, full-text search и period filter.
+- `server/_core/index.ts` — Express API endpoints.
+- `server/catalog.test.ts` — OCR/parser unit tests.
+- `Dockerfile` — production runtime с Tesseract локали.
+
+## Автоматизация и GitHub
+
+Ежедневната ScheduleTask е изключена. Синхронизацията се стартира само от потребителя чрез бутона и `/api/sync`.
+
+Проектът се поддържа в:
 
 [github.com/Manolov9/ofertix](https://github.com/Manolov9/ofertix)
 
-Промените се правят с отделен commit и се качват в `main`. След промяна на backend API или frontend bundle се прави нов build, checkpoint и publish.
-
-## Автоматизации
-
-Ежедневната ScheduleTask е изключена по избор на продукта. Ofertix разчита на потребителския бутон „Синхронизирай“ и на публичните endpoints. Това запазва контрола на потребителя и предотвратява автоматични заявки към източника без негово действие.
-
-## Unit tests
-
-Тестовете се намират в `server/catalog.test.ts` и се изпълняват с:
-
-```bash
-pnpm test
-```
-
-Те проверяват case-insensitive и substring търсене, форматирането на една или две цени, приоритизирането на реална `/catalogs/{id}/small/{page}.jpg` снимка и връщането на реалния продукт „Кока Кола“. Runtime проверката на ръчната синхронизация потвърждава `success`, 66 обработени магазина, налични каталози, URL към същия каталог за `brochureUrl` и `imageUrl`, и двоен `priceLabel`.
+Преди publish се изпълняват `pnpm check`, `pnpm test` и `pnpm build`.

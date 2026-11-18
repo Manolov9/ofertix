@@ -12,3 +12,5 @@
 .price{min-width:0}.price strong{font-size:16px;line-height:1.2;white-space:normal;display:block}.view-link{min-width:48px}.offer-card{grid-template-columns:39px 58px minmax(0,1fr) minmax(138px,auto) 54px}
 @media(max-width:900px){.offer-card{grid-template-columns:30px 52px minmax(0,1fr) 138px}.price strong{font-size:15px}}
 @media(max-width:600px){.offer-card{grid-template-columns:22px 46px minmax(0,1fr)}.offer-card .price{grid-column:3}.price strong{font-size:16px}}
+
+.result-count{color:#a3e635;font:500 13px 'IBM Plex Mono';vertical-align:middle;margin-left:8px}

@@ -1,7 +1,14 @@
 export type OfferPeriod = "this-week" | "next-week" | "ended";
 export type Store = { order: number; id: string; name: string; url: string; logo: string; active: boolean };
-export type Brochure = { id: string; storeId: string; title: string; url: string; period: OfferPeriod; rawDate: string; thumbnailUrl?: string; };
-export type Offer = { id: string; product: string; storeId: string; storeName: string; price: number; oldPrice?: number; priceLabel: string; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; source: string; imageUrl?: string; };
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+export type Brochure = { id: string; storeId: string; title: string; url: string; period: OfferPeriod; rawDate: string; thumbnailUrl?: string; pageUrls: string[]; };
+export type Offer = { id: string; product: string; searchText: string; storeId: string; storeName: string; price: number; currency?: "BGN" | "EUR"; priceLabel: string; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; pageUrl: string; source: string; imageUrl?: string; };
 export type SyncState = { status: "idle" | "running" | "success" | "error"; stage: string; startedAt?: string; finishedAt?: string; storesProcessed: number; brochuresProcessed: number; offersProcessed: number; message: string; };
 
 const sourceUrl = "https://katalozi-bg.info/companies";
@@ -12,6 +19,7 @@ const fallbackSlugs = [
 let stores: Store[] = fallbackSlugs.map(([id, name, slug], i) => ({ order: i + 1, id: String(id), name, url: `https://katalozi-bg.info/company/${id}/${slug}`, logo: `https://katalozi-bg.info/img/logos/${id}.jpg`, active: i < 58 }));
 let brochures: Brochure[] = [];
 let offers: Offer[] = [];
+const pageOcrCache = new Map<string, Offer[]>();
 let syncState: SyncState = { status: "idle", stage: "Готово за синхронизация", storesProcessed: 0, brochuresProcessed: 0, offersProcessed: 0, message: "Все още няма стартирано обновяване." };
 let syncPromise: Promise<void> | null = null;
 
@@ -27,11 +35,53 @@ const periodFromTitle = (title: string): OfferPeriod => {
   return "this-week";
 };
 
-function demoOffers(brochureList: Brochure[] = []): Offer[] {
-  const examples = [
-    ["Краве масло 250 г", 5.99, "Billa", "7", "този период"], ["Кафе мляно 250 г", 8.49, "Kaufland", "17", "този период"], ["Практична кошница", 12.9, "Lidl", "6", "този период"], ["Перилен препарат 2.5 л", 14.99, "Fantastico", "16", "другата седмица"], ["LED крушка 10W", 2.49, "Technopolis", "3", "този период"], ["Дървена етажерка", 39.9, "HomeMax", "22", "другата седмица"], ["Шампоан 400 мл", 6.79, "Lilly Drogerie", "27", "този период"], ["Прясно мляко 1 л", 2.59, "T market", "45", "приключила оферта"], ["Кока Кола 2 л", 3.49, "Billa", "7", "този период"]
-  ] as const;
-  return examples.map(([product, price, storeName, storeId, label], i) => { const secondary = Number((price * 1.2).toFixed(2)); const brochure = brochureList.find(b => b.storeId === storeId); return { id: `demo-${i}`, product, price, oldPrice: secondary, priceLabel: formatPriceLabel(price, secondary), unit: "бр.", storeId, storeName, period: label === "другата седмица" ? "next-week" : label === "приключила оферта" ? "ended" : "this-week", validLabel: label, brochureUrl: brochure?.url || `https://katalozi-bg.info/company/${storeId}`, source: sourceUrl, imageUrl: brochure?.thumbnailUrl }; });
+function extractPageUrls(html: string, baseUrl: string) {
+  const urls = [...html.matchAll(/<(?:img|source)[^>]+(?:src|data-src|srcset)=["']([^"']+)["']/gi)]
+    .map(match => match[1].split(",")[0].trim().split(" ")[0])
+    .filter(value => /\/catalogs\/\d+\/small\/\d+\.(?:jpg|jpeg|png)/i.test(value));
+  return [...new Set(urls.map(value => new URL(value, baseUrl).href.replace(/\/small\/(\d+)\.(jpg|jpeg|png)$/i, "/$1.$2")))];
+}
+
+export const thumbnailForPage = (pageUrl: string) => /\/small\/\d+\.(?:jpg|jpeg|png)$/i.test(pageUrl) ? pageUrl : pageUrl.replace(/\/(\d+)\.(jpg|jpeg|png)$/i, "/small/$1.$2");
+
+export function parseCatalogPrice(line: string) {
+  const hasCurrency = /лв\.?|лева?|€|eur(?:o)?|евро/i.test(line);
+  const hasDecimal = /\d{1,4}[.,]\d{2}/.test(line);
+  if (!hasCurrency && (!hasDecimal || /\d{1,2}[./]\d{1,2}|20\d{2}/.test(line))) return undefined;
+  const matches = [...line.matchAll(/(\d{1,4}(?:[.,]\d{1,2})?)(?!\s*%)\s*(лв\.?|лева?|€|eur(?:o)?|евро)?/gi)]
+    .map(match => ({ value: Number(match[1].replace(",", ".")), currency: /€|eur|евро/i.test(match[2] || "") ? "EUR" as const : /лв|лев/i.test(match[2] || "") ? "BGN" as const : undefined }));
+  const values = matches.filter(value => value.value > 0 && value.value < 100000);
+  if (!values.length) return undefined;
+  const pricedValues = values.some(value => value.currency) ? values.filter(value => value.currency) : values;
+  const primary = pricedValues[0];
+  const secondary = pricedValues.length > 1 ? pricedValues[1] : undefined;
+  const label = [primary, secondary].filter(Boolean).map(value => `${formatPrice(value!.value)}${value!.currency === "EUR" ? " €" : value!.currency === "BGN" ? " лв." : ""}`).join(" / ");
+  const price = secondary?.currency === "BGN" ? secondary.value : primary.currency === "EUR" ? Number((primary.value * 1.95583).toFixed(4)) : primary.value;
+  return { price, currency: primary.currency, priceLabel: label };
+}
+
+export function extractPageOffers(text: string, brochure: Brochure, storeName: string, pageUrl: string) {
+  const lines = text.split(/\r?\n/).map(normalize).filter(line => line.length >= 2);
+  return lines.flatMap((line, index) => {
+    const price = parseCatalogPrice(line);
+    if (!price) return [];
+    const context = [lines[index - 1], line, lines[index + 1]].filter(Boolean).join(" ");
+    const hasCurrency = /лв\.?|лева?|€|eur(?:o)?|евро/i.test(line);
+    const product = normalize(line.replace(hasCurrency ? /\d{1,4}(?:[.,]\d{1,2})?\s*(?:лв\.?|лева?|€|eur(?:o)?|евро)/gi : /\d{1,4}[.,]\d{2}/gi, " ")) || normalize(lines[index - 1] || `Продукт от страница ${pageUrl.split("/").pop()}`);
+    if (!/[А-Яа-яA-Za-z]{3}/.test(product)) return [];
+    return [{ id: `${brochure.id}-${pageUrl.split("/").pop()}-${index}`, product, searchText: context, storeId: brochure.storeId, storeName, price: price.price, currency: price.currency, priceLabel: price.priceLabel, unit: "бр.", period: brochure.period, validLabel: brochure.rawDate || "актуална брошура", brochureUrl: brochure.url, pageUrl, source: sourceUrl, imageUrl: thumbnailForPage(pageUrl) }];
+  });
+}
+
+async function ocrImage(imageUrl: string) {
+  const dir = await mkdtemp(join(tmpdir(), "ofertix-ocr-"));
+  const imagePath = join(dir, "page.jpg");
+  try {
+    const response = await fetch(imageUrl);
+    await writeFile(imagePath, Buffer.from(await response.arrayBuffer()));
+    const result = await execFileAsync("tesseract", [imagePath, "stdout", "-l", "bul+eng", "--psm", "11"], { maxBuffer: 4_000_000, timeout: 45_000 });
+    return result.stdout;
+  } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
 export function firstImageUrl(html: string, baseUrl: string) {
@@ -78,7 +128,7 @@ export async function syncCatalog() {
             catalogLinks.forEach((match, i) => {
               const url = new URL(match[1], store.url).href;
               const title = normalize(match[2].replace(/<[^>]+>/g, " ")) || `Каталог ${i + 1}`;
-              if (!nextBrochures.some(b => b.url === url)) nextBrochures.push({ id: `${store.id}-${i}`, storeId: store.id, title, url, period: periodFromTitle(title), rawDate: title });
+              if (!nextBrochures.some(b => b.url === url)) nextBrochures.push({ id: `${store.id}-${i}`, storeId: store.id, title, url, period: periodFromTitle(title), rawDate: title, pageUrls: [] });
             });
           } catch { /* one unavailable store should not cancel the full sync */ }
         }
@@ -90,13 +140,34 @@ export async function syncCatalog() {
           const brochure = nextBrochures[brochureCursor++];
           try {
             const brochureHtml = await fetch(brochure.url).then(r => r.text());
-            brochure.thumbnailUrl = firstImageUrl(brochureHtml, brochure.url);
+            brochure.pageUrls = extractPageUrls(brochureHtml, brochure.url);
+            brochure.thumbnailUrl = brochure.pageUrls[0] ? thumbnailForPage(brochure.pageUrls[0]) : firstImageUrl(brochureHtml, brochure.url);
           } catch { /* keep the brochure usable even when its preview image is unavailable */ }
         }
       };
       await Promise.all(Array.from({ length: 8 }, () => brochureWorker()));
       brochures = nextBrochures;
-      offers = demoOffers(brochures);
+      syncState = { ...syncState, brochuresProcessed: brochures.length };
+      const pages = brochures.flatMap(brochure => brochure.pageUrls.map(pageUrl => ({ brochure, pageUrl })));
+      const extractedOffers: Offer[] = [];
+      let pageCursor = 0;
+      const ocrWorker = async () => {
+        while (pageCursor < pages.length) {
+          const current = pages[pageCursor++];
+          syncState = { ...syncState, stage: `Разчитам продуктите от страница ${pageCursor}/${pages.length}…` };
+          try {
+            const storeName = stores.find(store => store.id === current.brochure.storeId)?.name || `Магазин ${current.brochure.storeId}`;
+            const cached = pageOcrCache.get(current.pageUrl);
+            const pageOffers = cached || extractPageOffers(await ocrImage(current.pageUrl), current.brochure, storeName, current.pageUrl);
+            pageOcrCache.set(current.pageUrl, pageOffers);
+            extractedOffers.push(...pageOffers);
+            syncState = { ...syncState, offersProcessed: extractedOffers.length };
+          } catch { /* keep the page available even if OCR fails for one image */ }
+        }
+      };
+      const ocrWorkers = Math.min(3, Math.max(1, Number(process.env.OCR_WORKERS || 3)));
+      await Promise.all(Array.from({ length: ocrWorkers }, () => ocrWorker()));
+      offers = extractedOffers;
       syncState = { status: "success", stage: "Синхронизацията завърши", startedAt, finishedAt: new Date().toISOString(), storesProcessed: stores.length, brochuresProcessed: brochures.length, offersProcessed: offers.length, message: `Заредени са ${stores.length} магазина и ${brochures.length} каталога.` };
     } catch (error) {
       syncState = { ...syncState, status: "error", stage: "Синхронизацията прекъсна", finishedAt: new Date().toISOString(), message: error instanceof Error ? error.message : "Неочаквана грешка" };
@@ -106,7 +177,7 @@ export async function syncCatalog() {
 }
 
 export function getCatalog(query = "", period = "all", sort = "price-asc") {
-  let result = offers.filter(o => !query || matchesQuery(o.product, query) || matchesQuery(o.storeName, query));
+  let result = offers.filter(o => !query || matchesQuery(o.product, query) || matchesQuery(o.searchText, query) || matchesQuery(o.storeName, query));
   if (period !== "all") result = result.filter(o => o.period === period);
   result = [...result].sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
   return { stores, brochures, offers: result.map((o, i) => ({ ...o, cheapest: i === 0 && sort !== "price-desc" })), sync: syncState, source: sourceUrl };
@@ -115,4 +186,4 @@ export function getCatalog(query = "", period = "all", sort = "price-asc") {
 export function getSyncState() { return syncState; }
 export function startSync() { return syncCatalog(); }
 
-offers = demoOffers();
+offers = [];
