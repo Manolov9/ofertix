@@ -80,7 +80,7 @@ export async function searchSourceCatalogs(query: string, category = ""): Promis
   return sourceSearchCache.get(cacheKey, async () => {
     const html = await fetchText(buildSourceSearchUrl(normalizedQuery, categoryId));
     const matches: SourceCatalogMatch[] = [];
-    const decodedHtml = html.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+    const decodedHtml = html.replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ");
     for (const card of decodedHtml.matchAll(/<search-thumbnail\s+:index='([^']+)'/gi)) {
       try {
         const data = JSON.parse(card[1]) as { catalog_id: number; page: number; imagePath?: string; catalogUrl?: string; line?: string; data?: { text?: string }; innerHits?: Array<{ _id?: string; _source?: { page?: number; line?: string; data?: { text?: string } } }>; catalog?: { expiration_date?: string; title?: string; company?: { bgName?: string } } };
@@ -141,21 +141,21 @@ export const thumbnailForPage = (pageUrl: string) => /\/small\/\d+\.(?:jpg|jpeg|
 
 export function parseCatalogPrice(line: string) {
   if (!line) return undefined;
-  // OCR често изпуска десетичната запетая: „079 €“ и „0-89€“ означават 0,79 € и 0,89 €.
+  // OCR често изпуска десетичната запетая: „799 €“ означава 7,99 €, а „0-89€“ — 0,89 €.
   const normalizedPriceLine = line
-    .replace(/\b(\d{3})\s*(€|eur(?:o)?|евро)/gi, (_all, digits, currency) => `0.${digits.slice(-2)} ${currency}`)
+    .replace(/\b(\d{3})\s*(€|eur(?:o)?|евро|лв\.?|лева?)/gi, (_all, digits, currency) => `${digits[0]}.${digits.slice(1)} ${currency}`)
     .replace(/\b\d\s*[-–]\s*(\d{2})\s*(€|eur(?:o)?|евро)/gi, (_all, cents, currency) => `0.${cents} ${currency}`);
-  const hasCurrency = /лв\.?|лева?|€|eur(?:o)?|евро/i.test(normalizedPriceLine);
-  const hasDecimal = /\d{1,4}[.,]\d{2}/.test(normalizedPriceLine);
-  if (!hasCurrency && (!hasDecimal || /\d{1,2}[./]\d{1,2}|20\d{2}/.test(line))) return undefined;
-  const matches = [...normalizedPriceLine.matchAll(/(\d{1,4}(?:[.,]\d{1,2})?)(?!\s*%)\s*(лв\.?|лева?|€|eur(?:o)?|евро)?/gi)]
-    .map(match => ({ value: Number(match[1].replace(",", ".")), currency: /€|eur|евро/i.test(match[2] || "") ? "EUR" as const : /лв|лев/i.test(match[2] || "") ? "BGN" as const : undefined }));
-  const values = matches.filter(value => value.value > 0 && value.value < 100000);
+  const values = [...normalizedPriceLine.matchAll(/(\d{1,4}(?:[.,]\d{1,2})?)\s*(лв\.?|лева?|€|eur(?:o)?|евро)/gi)]
+    .map(match => ({ value: Number(match[1].replace(",", ".")), currency: /€|eur|евро/i.test(match[2]) ? "EUR" as const : "BGN" as const }))
+    .filter(value => value.value > 0 && value.value < 100000);
   if (!values.length) return undefined;
-  const pricedValues = values.some(value => value.currency) ? values.filter(value => value.currency) : values;
-  const primary = pricedValues[0];
-  const secondary = pricedValues.length > 1 ? pricedValues[1] : undefined;
-  const label = [primary, secondary].filter(Boolean).map(value => `${formatPrice(value!.value)}${value!.currency === "EUR" ? " €" : value!.currency === "BGN" ? " лв." : ""}`).join(" / ");
+  const primary = values[0];
+  // Two currencies in one hit are two labels for the same price; repeated values
+  // in the same currency usually represent the old price or another product.
+  const secondary = values.length === 2 && values[1].currency !== primary.currency ? values[1] : undefined;
+  const rawUnit = normalizedPriceLine.match(/(?:€|eur(?:o)?|евро|лв\.?|лева?)\s*\/\s*(бр\.?|кг\.?|л\.?|опаковка)/i)?.[1];
+  const unitLabel = rawUnit ? ` / ${/^бр/i.test(rawUnit) ? "бр." : /^кг/i.test(rawUnit) ? "кг" : /^л/i.test(rawUnit) ? "л" : "опаковка"}` : "";
+  const label = `${[primary, secondary].filter(Boolean).map(value => `${formatPrice(value!.value)}${value!.currency === "EUR" ? " €" : " лв."}`).join(" / ")}${unitLabel}`;
   const price = secondary?.currency === "BGN" ? secondary.value : primary.currency === "EUR" ? Number((primary.value * 1.95583).toFixed(4)) : primary.value;
   return { price, currency: primary.currency, priceLabel: label };
 }

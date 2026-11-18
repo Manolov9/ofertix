@@ -1,6 +1,5 @@
 FROM node:22-bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-bul tesseract-ocr-eng && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@10.18.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches

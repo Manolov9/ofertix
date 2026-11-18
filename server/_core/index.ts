@@ -7,7 +7,7 @@ import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { getCatalog, getSyncState, hydrateCatalog, isSyncActive, searchSourceCatalogs, startSync } from "../catalog";
+import { getCatalog, searchSourceCatalogs } from "../catalog";
 import { isCatalogCategoryId } from "@shared/catalog-categories";
 
 async function startServer() {
@@ -25,24 +25,17 @@ async function startServer() {
     const category = isCatalogCategoryId(requestedCategory) ? requestedCategory : "";
     void (async () => {
       const sourceMatches = query ? await searchSourceCatalogs(query, category) : [];
-      const local = getCatalog(query, period, sort);
-      const categoryCatalogIds = new Set(sourceMatches.map(match => match.id));
-      const localOffers = category
-        ? local.offers.filter(offer => {
-            const catalogId = offer.pageUrl.match(/\/catalogs\/(\d+)\//)?.[1];
-            return catalogId !== undefined && categoryCatalogIds.has(catalogId);
-          })
-        : local.offers;
-      const sourceOffers = sourceMatches.flatMap(match => {
-        const hits = match.sourceHits?.length ? match.sourceHits : [{ id: `${match.id}-${match.page}`, page: match.page, text: match.sourceText || query, price: match.sourcePrice, priceLabel: match.sourcePriceLabel }];
-        return hits.map(hit => ({
+      const catalog = getCatalog("", "all", "price-asc");
+      const sourceOffers = sourceMatches.flatMap(match => (match.sourceHits || [])
+        .filter(hit => Number.isFinite(hit.price) && Boolean(hit.priceLabel) && hit.priceLabel !== "Цена в каталога")
+        .map(hit => ({
           id: `source-${match.id}-${hit.id}`,
           product: hit.text,
           searchText: hit.text,
           storeId: `source-${match.storeName}`,
           storeName: match.storeName,
-          price: hit.price ?? Number.POSITIVE_INFINITY,
-          priceLabel: hit.priceLabel || "Цена в каталога",
+          price: Number(hit.price),
+          priceLabel: hit.priceLabel!,
           unit: "бр.",
           period: match.period,
           validLabel: match.expirationDate ? `до ${match.expirationDate.slice(0, 10)}` : "актуална брошура",
@@ -50,19 +43,14 @@ async function startServer() {
           pageUrl: `https://katalozi-bg.info/catalogs/${match.id}/${hit.page}.jpg`,
           source: "https://katalozi-bg.info/companies",
           imageUrl: `https://katalozi-bg.info/catalogs/${match.id}/small/${hit.page}.jpg`,
-        }));
-      }).filter(offer => period === "all" || offer.period === period).sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
-      const offers = getSyncState().status === "success" && localOffers.length ? localOffers : sourceOffers.length ? sourceOffers : category ? localOffers : local.offers;
-      res.json({ ...local, offers, sourceMatches });
+        })))
+        .filter(offer => period === "all" || offer.period === period)
+        .sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
+      res.json({ stores: catalog.stores, offers: sourceOffers, sourceMatches, source: "https://katalozi-bg.info/companies" });
     })().catch(error => res.status(502).json({ error: error instanceof Error ? error.message : "Source search failed" }));
   });
-  app.get("/api/sync/status", (_req, res) => res.json(getSyncState()));
-  app.post("/api/sync", (_req, res) => {
-    const state = getSyncState();
-    if (state.status === "running" && isSyncActive()) return res.status(409).json(state);
-    void startSync();
-    res.status(202).json(getSyncState());
-  });
+  app.get("/api/sync/status", (_req, res) => res.status(410).json({ error: "Локалната OCR синхронизация е изключена; търсенето зарежда директно от каталозите." }));
+  app.post("/api/sync", (_req, res) => res.status(410).json({ error: "Локалната OCR синхронизация е изключена; търсенето зарежда директно от каталозите." }));
   app.get("/api/platform/config.js", (_req, res) => {
     res.set("Cache-Control", "no-store").type("application/javascript").send(publicPlatformScript());
   });
@@ -81,8 +69,6 @@ async function startServer() {
   } else {
     serveStatic(app);
   }
-  await hydrateCatalog();
-
   const port = Number(process.env.PORT || "3000");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
   server.on("error", error => { console.error("Server failed:", error.message); process.exit(1); });

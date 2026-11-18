@@ -37,6 +37,10 @@ describe("Ofertix OCR catalog index", () => {
   it("keeps euro-only and euro/lev prices distinct", () => {
     expect(parseCatalogPrice("Кафе 4,99 €")?.priceLabel).toBe("4,99 €");
     expect(parseCatalogPrice("Кафе 4,99 € 9,76 лв.")?.priceLabel).toBe("4,99 € / 9,76 лв.");
+    expect(parseCatalogPrice("Кафе EDUSCHO Family 500 г -27% 799 € 10,39")?.priceLabel).toBe("7,99 €");
+    expect(parseCatalogPrice("€ EDUSCHO разтворимо кафе 100 г / опаковка")).toBeUndefined();
+    expect(parseCatalogPrice("Кафе 3,29 € 10,39 €")?.priceLabel).toBe("3,29 €");
+    expect(parseCatalogPrice("Кафе капсули 0,22 €/ бр")?.priceLabel).toBe("0,22 € / бр.");
     expect(formatPriceLabel(3.49)).toBe("3,49 лв.");
     expect(parseCatalogPrice("ОТ ЧЕТВЪРТЪК 19.11. ДО СРЯДА 25.11.2026 Г.")).toBeUndefined();
   });
