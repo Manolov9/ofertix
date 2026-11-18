@@ -8,3 +8,7 @@
 .offer-card{grid-template-columns:39px 58px minmax(0,1fr) 100px 54px}.offer-thumb{width:58px;height:58px;border-radius:7px;overflow:hidden;background:#223149;display:grid;place-items:center;color:#73839a;font:9px 'IBM Plex Mono';text-align:center;text-transform:uppercase}.offer-thumb img{width:100%;height:100%;object-fit:cover;display:block}.sync-button.ready{background:#a3e635!important;color:#182314!important}.sync-button.syncing{background:#64748b!important;color:#e2e8f0!important}.sync-button.syncing:hover{background:#64748b!important}.sync-button.ready:hover{background:#bef264!important}
 @media(max-width:900px){.offer-card{grid-template-columns:30px 52px minmax(0,1fr) 90px}.offer-thumb{width:52px;height:52px}.view-link{display:none}}
 @media(max-width:600px){.offer-card{grid-template-columns:22px 46px minmax(0,1fr)}.offer-thumb{width:46px;height:46px}.offer-card .price{grid-column:3}.offer-main{min-width:0}}
+
+.price{min-width:0}.price strong{font-size:16px;line-height:1.2;white-space:normal;display:block}.view-link{min-width:48px}.offer-card{grid-template-columns:39px 58px minmax(0,1fr) minmax(138px,auto) 54px}
+@media(max-width:900px){.offer-card{grid-template-columns:30px 52px minmax(0,1fr) 138px}.price strong{font-size:15px}}
+@media(max-width:600px){.offer-card{grid-template-columns:22px 46px minmax(0,1fr)}.offer-card .price{grid-column:3}.price strong{font-size:16px}}

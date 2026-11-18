@@ -1,7 +1,7 @@
 export type OfferPeriod = "this-week" | "next-week" | "ended";
 export type Store = { order: number; id: string; name: string; url: string; logo: string; active: boolean };
 export type Brochure = { id: string; storeId: string; title: string; url: string; period: OfferPeriod; rawDate: string; thumbnailUrl?: string; };
-export type Offer = { id: string; product: string; storeId: string; storeName: string; price: number; oldPrice?: number; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; source: string; imageUrl?: string; };
+export type Offer = { id: string; product: string; storeId: string; storeName: string; price: number; oldPrice?: number; priceLabel: string; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; source: string; imageUrl?: string; };
 export type SyncState = { status: "idle" | "running" | "success" | "error"; stage: string; startedAt?: string; finishedAt?: string; storesProcessed: number; brochuresProcessed: number; offersProcessed: number; message: string; };
 
 const sourceUrl = "https://katalozi-bg.info/companies";
@@ -16,6 +16,9 @@ let syncState: SyncState = { status: "idle", stage: "Готово за синх�
 let syncPromise: Promise<void> | null = null;
 
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+export const matchesQuery = (value: string, query: string) => normalize(value).toLocaleLowerCase("bg-BG").includes(normalize(query).toLocaleLowerCase("bg-BG"));
+export const formatPrice = (value: number) => value.toFixed(2).replace(".", ",");
+export const formatPriceLabel = (primary: number, secondary?: number) => secondary === undefined ? `${formatPrice(primary)} лв.` : `${formatPrice(primary)} лв. / ${formatPrice(secondary)} лв.`;
 const periodFromTitle = (title: string): OfferPeriod => {
   const now = new Date();
   if (/до|изтек|минал|expired/i.test(title)) return "ended";
@@ -28,10 +31,10 @@ function demoOffers(brochureList: Brochure[] = []): Offer[] {
   const examples = [
     ["Краве масло 250 г", 5.99, "Billa", "7", "този период"], ["Кафе мляно 250 г", 8.49, "Kaufland", "17", "този период"], ["Практична кошница", 12.9, "Lidl", "6", "този период"], ["Перилен препарат 2.5 л", 14.99, "Fantastico", "16", "другата седмица"], ["LED крушка 10W", 2.49, "Technopolis", "3", "този период"], ["Дървена етажерка", 39.9, "HomeMax", "22", "другата седмица"], ["Шампоан 400 мл", 6.79, "Lilly Drogerie", "27", "този период"], ["Прясно мляко 1 л", 2.59, "T market", "45", "приключила оферта"], ["Кока Кола 2 л", 3.49, "Billa", "7", "този период"]
   ] as const;
-  return examples.map(([product, price, storeName, storeId, label], i) => ({ id: `demo-${i}`, product, price, oldPrice: Number((price * 1.2).toFixed(2)), unit: "бр.", storeId, storeName, period: label === "другата седмица" ? "next-week" : label === "приключила оферта" ? "ended" : "this-week", validLabel: label, brochureUrl: brochureList.find(b => b.storeId === storeId)?.url || `https://katalozi-bg.info/company/${storeId}`, source: sourceUrl, imageUrl: brochureList.find(b => b.storeId === storeId)?.thumbnailUrl }));
+  return examples.map(([product, price, storeName, storeId, label], i) => { const secondary = Number((price * 1.2).toFixed(2)); const brochure = brochureList.find(b => b.storeId === storeId); return { id: `demo-${i}`, product, price, oldPrice: secondary, priceLabel: formatPriceLabel(price, secondary), unit: "бр.", storeId, storeName, period: label === "другата седмица" ? "next-week" : label === "приключила оферта" ? "ended" : "this-week", validLabel: label, brochureUrl: brochure?.url || `https://katalozi-bg.info/company/${storeId}`, source: sourceUrl, imageUrl: brochure?.thumbnailUrl }; });
 }
 
-function firstImageUrl(html: string, baseUrl: string) {
+export function firstImageUrl(html: string, baseUrl: string) {
   const candidates = [...html.matchAll(/<(?:img|source)[^>]+(?:src|data-src|srcset)=["']([^"']+)["']/gi)]
     .map(match => match[1].split(",")[0].trim().split(" ")[0])
     .filter(value => value && !value.startsWith("data:") && !/logo|app-logo|icon|avatar|available-on|en_generic|store-badge/i.test(value));
@@ -59,7 +62,10 @@ export async function syncCatalog() {
         const name = normalize(slug.replace(/[._-]+/g, " ")) || fallback?.[1] || `Магазин ${id}`;
         parsed.push({ order: parsed.length + 1, id, name: name.replace(/\b\w/g, c => c.toUpperCase()), url: new URL(href, sourceUrl).href, logo: `https://katalozi-bg.info/img/logos/${id}.jpg`, active: true });
       });
-      if (parsed.length >= 10) stores = parsed;
+      if (parsed.length >= 10) {
+        const parsedById = new Map(parsed.map(store => [store.id, store]));
+        stores = fallbackSlugs.map(([id, name, slug], i) => parsedById.get(String(id)) || { order: i + 1, id: String(id), name, url: `https://katalozi-bg.info/company/${id}/${slug}`, logo: `https://katalozi-bg.info/img/logos/${id}.jpg`, active: true });
+      }
       const nextBrochures: Brochure[] = [];
       let cursor = 0;
       const worker = async () => {
@@ -100,8 +106,7 @@ export async function syncCatalog() {
 }
 
 export function getCatalog(query = "", period = "all", sort = "price-asc") {
-  const needle = normalize(query).toLocaleLowerCase("bg-BG");
-  let result = offers.filter(o => !needle || o.product.toLocaleLowerCase("bg-BG").includes(needle) || o.storeName.toLocaleLowerCase("bg-BG").includes(needle));
+  let result = offers.filter(o => !query || matchesQuery(o.product, query) || matchesQuery(o.storeName, query));
   if (period !== "all") result = result.filter(o => o.period === period);
   result = [...result].sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
   return { stores, brochures, offers: result.map((o, i) => ({ ...o, cheapest: i === 0 && sort !== "price-desc" })), sync: syncState, source: sourceUrl };
