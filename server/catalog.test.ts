@@ -45,6 +45,13 @@ describe("Ofertix OCR catalog index", () => {
     expect(offers.map(offer => offer.product)).toEqual(expect.arrayContaining(["Coca-Cola Original 2 л", "Coca-Cola Zero 1,5 л", "Coca-Cola Cherry 330 мл"]));
   });
 
+  it("indexes a visible milk product even when OCR misses its price label", () => {
+    const brochure = { id: "store-3", storeId: "3", title: "Каталог", url: "https://example.test/catalog/3", period: "this-week" as const, rawDate: "този период", pageUrls: [] };
+    const offers = extractPageOffers("Прясно мляко\n500 г\nснимка на продукта", brochure, "Магазин", "https://example.test/catalogs/3/2.jpg");
+    expect(offers.some(offer => offer.product.includes("мляко"))).toBe(true);
+    expect(offers.find(offer => offer.product.includes("мляко"))?.priceLabel).toBe("Цена в брошурата");
+  });
+
   it("does not show fake demo offers before a real sync", () => {
     expect(getCatalog("кафе").offers).toHaveLength(0);
   });

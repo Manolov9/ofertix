@@ -73,7 +73,7 @@ export function parseCatalogPrice(line: string) {
 
 export function extractPageOffers(text: string, brochure: Brochure, storeName: string, pageUrl: string) {
   const lines = text.split(/\r?\n/).map(normalize).filter(line => line.length >= 2);
-  return lines.flatMap((line, index) => {
+  const pricedOffers = lines.flatMap((line, index) => {
     const price = parseCatalogPrice(line);
     if (!price) return [];
     const context = [lines[index - 1], line, lines[index + 1]].filter(Boolean).join(" ");
@@ -82,6 +82,15 @@ export function extractPageOffers(text: string, brochure: Brochure, storeName: s
     if (!/[А-Яа-яA-Za-z]{3}/.test(product)) return [];
     return [{ id: `${brochure.id}-${pageUrl.split("/").pop()}-${index}`, product, searchText: context, storeId: brochure.storeId, storeName, price: price.price, currency: price.currency, priceLabel: price.priceLabel, unit: "бр.", period: brochure.period, validLabel: brochure.rawDate || "актуална брошура", brochureUrl: brochure.url, pageUrl, source: sourceUrl, imageUrl: thumbnailForPage(pageUrl) }];
   });
+  const searchableTerms = /кафе|coffee|мляко|млеч|кисело|йогурт|coca|кола|сирене|кашкавал|масло|хляб|зехтин|олио|захар|брашно|шоколад|шампоан|прах за пране/i;
+  const textOffers = lines.flatMap((line, index) => {
+    if (!searchableTerms.test(line) || !/[А-Яа-яA-Za-z]{3}/.test(line)) return [];
+    const context = [lines[index - 1], line, lines[index + 1], lines[index + 2]].filter(Boolean).join(" ");
+    if (pricedOffers.some(offer => offer.searchText.includes(line))) return [];
+    const nearbyPrice = [line, lines[index + 1], lines[index + 2], lines[index - 1]].map(parseCatalogPrice).find(Boolean);
+    return [{ id: `${brochure.id}-${pageUrl.split("/").pop()}-text-${index}`, product: line, searchText: context, storeId: brochure.storeId, storeName, price: nearbyPrice?.price ?? Number.POSITIVE_INFINITY, currency: nearbyPrice?.currency, priceLabel: nearbyPrice?.priceLabel ?? "Цена в брошурата", unit: "бр.", period: brochure.period, validLabel: brochure.rawDate || "актуална брошура", brochureUrl: brochure.url, pageUrl, source: sourceUrl, imageUrl: thumbnailForPage(pageUrl) }];
+  });
+  return [...pricedOffers, ...textOffers];
 }
 
 async function ocrImage(imageUrl: string) {
@@ -162,7 +171,8 @@ export async function syncCatalog() {
       await Promise.all(Array.from({ length: 8 }, () => brochureWorker()));
       brochures = nextBrochures;
       syncState = { ...syncState, brochuresProcessed: brochures.length };
-      const pages = brochures.flatMap(brochure => brochure.pageUrls.map(pageUrl => ({ brochure, pageUrl })));
+      const foodStorePriority = new Map(["7", "17", "6", "16", "22", "45", "78", "20", "58", "94", "101", "61"].map((id, index) => [id, index]));
+      const pages = brochures.flatMap(brochure => brochure.pageUrls.map(pageUrl => ({ brochure, pageUrl }))).sort((a, b) => (foodStorePriority.get(a.brochure.storeId) ?? 999) - (foodStorePriority.get(b.brochure.storeId) ?? 999));
       const extractedOffers: Offer[] = [];
       let pageCursor = 0;
       // OCR is deliberately sequential and batched. Tesseract is memory-heavy on brochure pages;
@@ -183,6 +193,7 @@ export async function syncCatalog() {
             } catch { return []; /* one failed image must not cancel the remaining batches */ }
           }));
           results.forEach(pageOffers => extractedOffers.push(...pageOffers));
+          offers = [...extractedOffers];
           syncState = { ...syncState, offersProcessed: extractedOffers.length };
         }
         pageCursor += batch.length;
