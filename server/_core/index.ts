@@ -7,7 +7,7 @@ import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { getCatalog, getSyncState, hydrateCatalog, startSync } from "../catalog";
+import { getCatalog, getSyncState, hydrateCatalog, searchSourceCatalogs, startSync } from "../catalog";
 
 async function startServer() {
   const app = express();
@@ -20,7 +20,11 @@ async function startServer() {
     const query = typeof req.query.q === "string" ? req.query.q : "";
     const period = typeof req.query.period === "string" ? req.query.period : "all";
     const sort = typeof req.query.sort === "string" ? req.query.sort : "price-asc";
-    res.json(getCatalog(query, period, sort));
+    void (async () => {
+      const local = getCatalog(query, period, sort);
+      const sourceMatches = query ? await searchSourceCatalogs(query) : [];
+      res.json({ ...local, sourceMatches });
+    })().catch(error => res.status(502).json({ error: error instanceof Error ? error.message : "Source search failed" }));
   });
   app.get("/api/sync/status", (_req, res) => res.json(getSyncState()));
   app.post("/api/sync", (_req, res) => {

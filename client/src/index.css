@@ -14,3 +14,11 @@
 @media(max-width:600px){.offer-card{grid-template-columns:22px 46px minmax(0,1fr)}.offer-card .price{grid-column:3}.price strong{font-size:16px}}
 
 .result-count{color:#a3e635;font:500 13px 'IBM Plex Mono';vertical-align:middle;margin-left:8px}
+
+.source-match-list { margin-top: 22px; padding: 18px; border: 1px solid rgba(148,163,184,.18); border-radius: 16px; background: rgba(15,23,42,.55); }
+.source-match-list .eyebrow { margin-bottom: 12px; }
+.source-match-list a { display: flex; align-items: center; gap: 10px; padding: 9px 0; color: #cbd5e1; border-bottom: 1px solid rgba(148,163,184,.1); text-decoration: none; }
+.source-match-list a:last-child { border-bottom: 0; }
+.source-match-list a:hover { color: #bef264; }
+.source-match-list a span { width: 26px; color: #84cc16; font-variant-numeric: tabular-nums; }
+.source-match-list a svg { margin-left: auto; }
