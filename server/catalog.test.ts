@@ -6,6 +6,8 @@ describe("Ofertix OCR catalog index", () => {
     expect(matchesQuery("Кафе мляно 250 г", "кафе")).toBe(true);
     expect(matchesQuery("Промоция: КАФЕ арабика", "КАФЕ")).toBe(true);
     expect(matchesQuery("Мляко", "кафе")).toBe(false);
+    expect(matchesQuery("Кисело мляко 2% 400 г", "Кисело мляко")).toBe(true);
+    expect(matchesQuery("Кисело масло", "Кисело мляко")).toBe(false);
   });
 
   it("keeps euro-only and euro/lev prices distinct", () => {

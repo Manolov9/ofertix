@@ -1,10 +1,12 @@
 export type OfferPeriod = "this-week" | "next-week" | "ended";
 export type Store = { order: number; id: string; name: string; url: string; logo: string; active: boolean };
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { activateCatalogRun, appendCatalogOffers, loadCatalogSnapshot, persistCatalogMetadata, persistSyncState } from "./db";
 
 const execFileAsync = promisify(execFile);
 const OCR_BATCH_SIZE = Math.min(8, Math.max(1, Number(process.env.OCR_BATCH_SIZE || 6)));
@@ -25,6 +27,17 @@ const pageOcrCache = new Map<string, Offer[]>();
 let syncState: SyncState = { status: "idle", stage: "Готово за синхронизация", storesProcessed: 0, brochuresProcessed: 0, offersProcessed: 0, message: "Все още няма стартирано обновяване." };
 let syncPromise: Promise<void> | null = null;
 
+export async function hydrateCatalog() {
+  try {
+    const snapshot = await loadCatalogSnapshot();
+    if (!snapshot) return;
+    if (snapshot.stores.length) stores = snapshot.stores;
+    brochures = snapshot.brochures;
+    offers = snapshot.offers;
+    if (snapshot.sync) syncState = snapshot.sync;
+  } catch (error) { console.warn("[Catalog] Persistent snapshot unavailable:", error); }
+}
+
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
 async function fetchText(url: string, timeoutMs = 20_000) {
   const controller = new AbortController();
@@ -35,7 +48,11 @@ async function fetchText(url: string, timeoutMs = 20_000) {
     return await response.text();
   } finally { clearTimeout(timer); }
 }
-export const matchesQuery = (value: string, query: string) => normalize(value).toLocaleLowerCase("bg-BG").includes(normalize(query).toLocaleLowerCase("bg-BG"));
+export const matchesQuery = (value: string, query: string) => {
+  const haystack = normalize(value).toLocaleLowerCase("bg-BG");
+  const terms = normalize(query).toLocaleLowerCase("bg-BG").split(/\s+/).filter(Boolean);
+  return terms.length > 0 && terms.every(term => haystack.includes(term));
+};
 export const formatPrice = (value: number) => value.toFixed(2).replace(".", ",");
 export const formatPriceLabel = (primary: number, secondary?: number) => secondary === undefined ? `${formatPrice(primary)} лв.` : `${formatPrice(primary)} лв. / ${formatPrice(secondary)} лв.`;
 const periodFromTitle = (title: string): OfferPeriod => {
@@ -118,8 +135,10 @@ export function firstImageUrl(html: string, baseUrl: string) {
 export async function syncCatalog() {
   if (syncPromise) return syncPromise;
   syncPromise = (async () => {
+    const runId = randomUUID();
     const startedAt = new Date().toISOString();
     syncState = { status: "running", stage: "Чета списъка с магазини…", startedAt, storesProcessed: 0, brochuresProcessed: 0, offersProcessed: 0, message: "" };
+    await persistSyncState(syncState);
     try {
       const html = await fetchText(sourceUrl);
       const parsed: Store[] = [];
@@ -170,7 +189,9 @@ export async function syncCatalog() {
       };
       await Promise.all(Array.from({ length: 8 }, () => brochureWorker()));
       brochures = nextBrochures;
+      await persistCatalogMetadata(stores, brochures);
       syncState = { ...syncState, brochuresProcessed: brochures.length };
+      await persistSyncState(syncState);
       const foodStorePriority = new Map(["7", "17", "6", "16", "22", "45", "78", "20", "58", "94", "101", "61"].map((id, index) => [id, index]));
       const pages = brochures.flatMap(brochure => brochure.pageUrls.map(pageUrl => ({ brochure, pageUrl }))).sort((a, b) => (foodStorePriority.get(a.brochure.storeId) ?? 999) - (foodStorePriority.get(b.brochure.storeId) ?? 999));
       const extractedOffers: Offer[] = [];
@@ -192,25 +213,30 @@ export async function syncCatalog() {
               return pageOffers;
             } catch { return []; /* one failed image must not cancel the remaining batches */ }
           }));
+          const newOffers = results.flat();
           results.forEach(pageOffers => extractedOffers.push(...pageOffers));
+          await appendCatalogOffers(runId, newOffers);
           offers = [...extractedOffers];
           syncState = { ...syncState, offersProcessed: extractedOffers.length };
         }
         pageCursor += batch.length;
+        await persistSyncState(syncState);
         // Yield after every batch so /api/sync/status remains responsive and memory can be reclaimed.
         await new Promise<void>(resolve => setImmediate(resolve));
       }
       offers = extractedOffers;
       syncState = { status: "success", stage: "Синхронизацията завърши", startedAt, finishedAt: new Date().toISOString(), storesProcessed: stores.length, brochuresProcessed: brochures.length, offersProcessed: offers.length, message: `Заредени са ${stores.length} магазина и ${brochures.length} каталога.` };
+      await activateCatalogRun(runId, syncState);
     } catch (error) {
       syncState = { ...syncState, status: "error", stage: "Синхронизацията прекъсна", finishedAt: new Date().toISOString(), message: error instanceof Error ? error.message : "Неочаквана грешка" };
+      await persistSyncState(syncState);
     } finally { syncPromise = null; }
   })();
   return syncPromise;
 }
 
 export function getCatalog(query = "", period = "all", sort = "price-asc") {
-  let result = offers.filter(o => !query || matchesQuery(o.product, query) || matchesQuery(o.searchText, query) || matchesQuery(o.storeName, query));
+  let result = offers.filter(o => !query || matchesQuery(`${o.product} ${o.searchText}`, query));
   if (period !== "all") result = result.filter(o => o.period === period);
   result = [...result].sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
   return { stores, brochures, offers: result.map((o, i) => ({ ...o, cheapest: i === 0 && sort !== "price-desc" })), sync: syncState, source: sourceUrl };

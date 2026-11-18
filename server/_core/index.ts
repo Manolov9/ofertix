@@ -7,7 +7,7 @@ import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { getCatalog, getSyncState, startSync } from "../catalog";
+import { getCatalog, getSyncState, hydrateCatalog, startSync } from "../catalog";
 
 async function startServer() {
   const app = express();
@@ -47,6 +47,7 @@ async function startServer() {
   } else {
     serveStatic(app);
   }
+  await hydrateCatalog();
 
   const port = Number(process.env.PORT || "3000");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
