@@ -1,7 +1,7 @@
 export type OfferPeriod = "this-week" | "next-week" | "ended";
 export type Store = { order: number; id: string; name: string; url: string; logo: string; active: boolean };
-export type Brochure = { id: string; storeId: string; title: string; url: string; period: OfferPeriod; rawDate: string; };
-export type Offer = { id: string; product: string; storeId: string; storeName: string; price: number; oldPrice?: number; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; source: string; };
+export type Brochure = { id: string; storeId: string; title: string; url: string; period: OfferPeriod; rawDate: string; thumbnailUrl?: string; };
+export type Offer = { id: string; product: string; storeId: string; storeName: string; price: number; oldPrice?: number; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; source: string; imageUrl?: string; };
 export type SyncState = { status: "idle" | "running" | "success" | "error"; stage: string; startedAt?: string; finishedAt?: string; storesProcessed: number; brochuresProcessed: number; offersProcessed: number; message: string; };
 
 const sourceUrl = "https://katalozi-bg.info/companies";
@@ -24,11 +24,19 @@ const periodFromTitle = (title: string): OfferPeriod => {
   return "this-week";
 };
 
-function demoOffers(): Offer[] {
+function demoOffers(brochureList: Brochure[] = []): Offer[] {
   const examples = [
     ["Краве масло 250 г", 5.99, "Billa", "7", "този период"], ["Кафе мляно 250 г", 8.49, "Kaufland", "17", "този период"], ["Практична кошница", 12.9, "Lidl", "6", "този период"], ["Перилен препарат 2.5 л", 14.99, "Fantastico", "16", "другата седмица"], ["LED крушка 10W", 2.49, "Technopolis", "3", "този период"], ["Дървена етажерка", 39.9, "HomeMax", "22", "другата седмица"], ["Шампоан 400 мл", 6.79, "Lilly Drogerie", "27", "този период"], ["Прясно мляко 1 л", 2.59, "T market", "45", "приключила оферта"], ["Кока Кола 2 л", 3.49, "Billa", "7", "този период"]
   ] as const;
-  return examples.map(([product, price, storeName, storeId, label], i) => ({ id: `demo-${i}`, product, price, oldPrice: Number((price * 1.2).toFixed(2)), unit: "бр.", storeId, storeName, period: label === "другата седмица" ? "next-week" : label === "приключила оферта" ? "ended" : "this-week", validLabel: label, brochureUrl: `https://katalozi-bg.info/company/${storeId}`, source: sourceUrl }));
+  return examples.map(([product, price, storeName, storeId, label], i) => ({ id: `demo-${i}`, product, price, oldPrice: Number((price * 1.2).toFixed(2)), unit: "бр.", storeId, storeName, period: label === "другата седмица" ? "next-week" : label === "приключила оферта" ? "ended" : "this-week", validLabel: label, brochureUrl: brochureList.find(b => b.storeId === storeId)?.url || `https://katalozi-bg.info/company/${storeId}`, source: sourceUrl, imageUrl: brochureList.find(b => b.storeId === storeId)?.thumbnailUrl }));
+}
+
+function firstImageUrl(html: string, baseUrl: string) {
+  const candidates = [...html.matchAll(/<(?:img|source)[^>]+(?:src|data-src|srcset)=["']([^"']+)["']/gi)]
+    .map(match => match[1].split(",")[0].trim().split(" ")[0])
+    .filter(value => value && !value.startsWith("data:") && !/logo|app-logo|icon|avatar|available-on|en_generic|store-badge/i.test(value));
+  const catalogPage = candidates.find(value => /\/catalogs\/\d+\/small\/\d+\.(?:jpg|jpeg|png)/i.test(value));
+  return catalogPage ? new URL(catalogPage, baseUrl).href : candidates[0] ? new URL(candidates[0], baseUrl).href : undefined;
 }
 
 export async function syncCatalog() {
@@ -70,8 +78,19 @@ export async function syncCatalog() {
         }
       };
       await Promise.all(Array.from({ length: 8 }, () => worker()));
+      let brochureCursor = 0;
+      const brochureWorker = async () => {
+        while (brochureCursor < nextBrochures.length) {
+          const brochure = nextBrochures[brochureCursor++];
+          try {
+            const brochureHtml = await fetch(brochure.url).then(r => r.text());
+            brochure.thumbnailUrl = firstImageUrl(brochureHtml, brochure.url);
+          } catch { /* keep the brochure usable even when its preview image is unavailable */ }
+        }
+      };
+      await Promise.all(Array.from({ length: 8 }, () => brochureWorker()));
       brochures = nextBrochures;
-      offers = demoOffers();
+      offers = demoOffers(brochures);
       syncState = { status: "success", stage: "Синхронизацията завърши", startedAt, finishedAt: new Date().toISOString(), storesProcessed: stores.length, brochuresProcessed: brochures.length, offersProcessed: offers.length, message: `Заредени са ${stores.length} магазина и ${brochures.length} каталога.` };
     } catch (error) {
       syncState = { ...syncState, status: "error", stage: "Синхронизацията прекъсна", finishedAt: new Date().toISOString(), message: error instanceof Error ? error.message : "Неочаквана грешка" };
