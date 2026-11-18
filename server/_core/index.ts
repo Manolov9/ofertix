@@ -21,9 +21,26 @@ async function startServer() {
     const period = typeof req.query.period === "string" ? req.query.period : "all";
     const sort = typeof req.query.sort === "string" ? req.query.sort : "price-asc";
     void (async () => {
-      const local = getCatalog(query, period, sort);
       const sourceMatches = query ? await searchSourceCatalogs(query) : [];
-      res.json({ ...local, sourceMatches });
+      const local = getCatalog(query, period, sort);
+      const sourceOffers = sourceMatches.filter(match => Number.isFinite(match.sourcePrice)).map(match => ({
+        id: `source-${match.id}-${match.page}`,
+        product: match.sourceText || query,
+        searchText: match.sourceText || query,
+        storeId: `source-${match.storeName}`,
+        storeName: match.storeName,
+        price: match.sourcePrice as number,
+        priceLabel: match.sourcePriceLabel || "Цена в каталога",
+        unit: "бр.",
+        period: match.period,
+        validLabel: match.expirationDate ? `до ${match.expirationDate.slice(0, 10)}` : "актуална брошура",
+        brochureUrl: match.pageUrl,
+        pageUrl: match.pageUrl,
+        source: "https://katalozi-bg.info/companies",
+        imageUrl: match.imageUrl,
+      }));
+      const offers = local.offers.length ? local.offers : sourceOffers.filter(offer => period === "all" || offer.period === period).sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price);
+      res.json({ ...local, offers, sourceMatches });
     })().catch(error => res.status(502).json({ error: error instanceof Error ? error.message : "Source search failed" }));
   });
   app.get("/api/sync/status", (_req, res) => res.json(getSyncState()));
