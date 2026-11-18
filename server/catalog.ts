@@ -37,7 +37,13 @@ export async function hydrateCatalog() {
     if (snapshot.stores.length) stores = snapshot.stores;
     brochures = snapshot.brochures;
     offers = snapshot.offers;
-    if (snapshot.sync) syncState = snapshot.sync;
+    if (snapshot.sync) {
+      // A process restart cannot resume an in-memory OCR promise. Do not expose
+      // a stale page counter such as 30/3280 as if synchronization were active.
+      syncState = snapshot.sync.status === "running"
+        ? { ...snapshot.sync, status: "idle", stage: "Готово за нова синхронизация", message: "Предишната синхронизация е прекъсната. Старите данни са запазени." }
+        : snapshot.sync;
+    }
   } catch (error) { console.warn("[Catalog] Persistent snapshot unavailable:", error); }
 }
 
@@ -299,6 +305,12 @@ export function getCatalog(query = "", period = "all", sort = "price-asc") {
 }
 
 export function getSyncState() { return syncState; }
-export function startSync() { return syncCatalog(); }
+export function isSyncActive() { return syncPromise !== null; }
+export function startSync() {
+  if (!syncPromise && syncState.status === "running") {
+    syncState = { ...syncState, status: "idle", stage: "Готово за нова синхронизация", message: "Предишната синхронизация е прекъсната. Старите данни са запазени." };
+  }
+  return syncCatalog();
+}
 
 offers = [];

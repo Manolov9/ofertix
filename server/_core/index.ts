@@ -7,7 +7,7 @@ import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { getCatalog, getSyncState, hydrateCatalog, searchSourceCatalogs, startSync } from "../catalog";
+import { getCatalog, getSyncState, hydrateCatalog, isSyncActive, searchSourceCatalogs, startSync } from "../catalog";
 
 async function startServer() {
   const app = express();
@@ -49,7 +49,7 @@ async function startServer() {
   app.get("/api/sync/status", (_req, res) => res.json(getSyncState()));
   app.post("/api/sync", (_req, res) => {
     const state = getSyncState();
-    if (state.status === "running") return res.status(409).json(state);
+    if (state.status === "running" && isSyncActive()) return res.status(409).json(state);
     void startSync();
     res.status(202).json(getSyncState());
   });
