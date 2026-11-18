@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownUp, Check, ChevronRight, ExternalLink, Search, Store as StoreIcon, Trophy, Zap } from "lucide-react";
+import { Check, ChevronRight, ExternalLink, Search, Store as StoreIcon, Trophy, X, Zap } from "lucide-react";
 import { CategoryFilter } from "@/components/CategoryFilter";
 import { isCatalogCategoryId, type CatalogCategoryFilter } from "@shared/catalog-categories";
 
@@ -10,14 +10,10 @@ type Offer = {
   storeId: string;
   storeName: string;
   price: number;
-  currency?: string;
   priceLabel: string;
-  unit: string;
   period: string;
-  validLabel: string;
   brochureUrl: string;
   pageUrl: string;
-  imageUrl?: string;
 };
 type SourceMatch = {
   id: string;
@@ -42,15 +38,7 @@ const periodLabels: Record<string, string> = {
   ended: "Приключили",
 };
 
-const displayProduct = (text: string) => text
-  .replace(/&#0?39;/g, "'")
-  .replace(/&amp;/g, "&")
-  .replace(/\s*[-–]?\s*\d{1,4}(?:[.,]\d{1,2})?\s*(?:лв\.?|лева?|€|eur(?:o)?|евро)(?:\s*\/\s*(?:бр\.?|кг\.?|опаковка))?/gi, " ")
-  .replace(/\s*[-–]\s*\d{1,2}%/g, " ")
-  .replace(/\s+/g, " ")
-  .trim();
-
-const pageNumber = (url: string) => Number(url.match(/\/(\d+)\.jpg(?:\?|$)/)?.[1] || 0);
+const quickSearches = ["кафе", "dolce gusto", "кока кола", "кисело мляко"];
 
 export default function Home() {
   const [query, setQuery] = useState(() => {
@@ -58,7 +46,6 @@ export default function Home() {
     return params.get("q") || params.get("query") || "";
   });
   const [period, setPeriod] = useState("all");
-  const [sort, setSort] = useState("price-asc");
   const [storeFilter, setStoreFilter] = useState("all");
   const [category, setCategory] = useState<CatalogCategoryFilter>(() => {
     const value = new URLSearchParams(window.location.search).get("category");
@@ -69,11 +56,12 @@ export default function Home() {
   const [stores, setStores] = useState<Store[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [activeCatalog, setActiveCatalog] = useState<SourceMatch | null>(null);
   const loadTimerRef = useRef<number | undefined>(undefined);
   const requestSequenceRef = useRef(0);
 
   const load = useCallback(async () => {
-    const params = new URLSearchParams({ q: query, period, sort });
+    const params = new URLSearchParams({ q: query, period, sort: "price-asc" });
     if (category !== "all") params.set("category", category);
     const requestId = ++requestSequenceRef.current;
     setLoadingResults(Boolean(query.trim()));
@@ -95,7 +83,7 @@ export default function Home() {
     } finally {
       if (requestId === requestSequenceRef.current) setLoadingResults(false);
     }
-  }, [query, period, sort, category]);
+  }, [query, period, category]);
 
   useEffect(() => {
     requestSequenceRef.current += 1;
@@ -117,22 +105,31 @@ export default function Home() {
     window.history.replaceState(null, "", `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`);
   }, [query, category]);
 
+  useEffect(() => {
+    if (!activeCatalog) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActiveCatalog(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [activeCatalog]);
+
   const visibleSourceMatches = useMemo(() => sourceMatches.filter(match =>
     (period === "all" || match.period === period) &&
     (storeFilter === "all" || match.storeName === storeFilter)
   ), [sourceMatches, period, storeFilter]);
 
+  // Retained only for the existing „НАЙ-ЕВТИНО“ catalog badge; no prices are shown in the UI.
   const visiblePriceOffers = useMemo(() => offers
     .filter(offer => Number.isFinite(offer.price) && Boolean(offer.priceLabel) && offer.priceLabel !== "Цена в каталога")
     .filter(offer => (period === "all" || offer.period === period) && (storeFilter === "all" || offer.storeName === storeFilter))
-    .sort((a, b) => sort === "price-desc" ? b.price - a.price : a.price - b.price),
-  [offers, period, storeFilter, sort]);
-
-  const lowestPriceOffer = useMemo(() => visiblePriceOffers.length
-    ? [...visiblePriceOffers].sort((a, b) => a.price - b.price)[0]
-    : undefined,
-  [visiblePriceOffers]);
-
+    .sort((a, b) => a.price - b.price), [offers, period, storeFilter]);
+  const lowestPriceOffer = visiblePriceOffers[0];
   const cheapestCatalogIds = useMemo(() => new Set(lowestPriceOffer
     ? visiblePriceOffers
         .filter(offer => offer.price === lowestPriceOffer.price)
@@ -141,7 +138,7 @@ export default function Home() {
     : []), [visiblePriceOffers, lowestPriceOffer]);
 
   const sourceStores = useMemo(() => [...new Set(sourceMatches.map(match => match.storeName))], [sourceMatches]);
-  const otherPriceOffers = visiblePriceOffers.filter(offer => offer.id !== lowestPriceOffer?.id);
+  const resultStoreCount = useMemo(() => new Set(visibleSourceMatches.map(match => match.storeName)).size, [visibleSourceMatches]);
   const shownStores = stores.slice(0, 14);
 
   const submitSearch = () => {
@@ -151,29 +148,28 @@ export default function Home() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <div className="brand"><span className="brand-mark">≋</span><span>ОФЕРТИКС</span><small>сравни цената</small></div>
+      <div className="brand"><span className="brand-mark">≋</span><span>ОФЕРТИКС</span><small>намери офертата</small></div>
       <div className="source-chip"><span className="live-dot" /> Източник: katalozi-bg.info <a href="https://katalozi-bg.info/companies" target="_blank" rel="noreferrer" aria-label="Отвори източника"><ExternalLink size={13} /></a></div>
     </header>
 
     <main className="dashboard">
       <section className="search-zone">
         <div className="eyebrow"><Zap size={14} /> АКТУАЛНИ ДАННИ ОТ КАТАЛОЗИТЕ</div>
-        <h1>Търси веднъж.<br /><em>Сравни навсякъде.</em></h1>
-        <p className="lede">Намери продукта в активните брошури и отвори оригиналната оферта с едно натискане.</p>
+        <h1>Търси веднъж.<br /><em>Виж навсякъде.</em></h1>
+        <p className="lede">Намери продукта в активните брошури и отвори оригиналната страница в прозорец тук.</p>
         <div className="search-box">
           <Search size={22} />
-          <input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === "Enter") submitSearch(); }} placeholder="Напр. кафе, масло, шампоан…" />
+          <input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === "Enter") submitSearch(); }} placeholder="Напр. кафе, dolce gusto, кока кола…" />
           <kbd>⌘ K</kbd>
           <button onClick={submitSearch} aria-label="Търси"><ChevronRight size={22} /></button>
         </div>
-        <div className="quick-searches"><span>Бързо търсене:</span>{["кафе", "кисело мляко", "кока кола"].map(item => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div>
+        <div className="quick-searches"><span>Бързо търсене:</span>{quickSearches.map(item => <button key={item} onClick={() => setQuery(item)}>{item}</button>)}</div>
         <details className="usage-guide">
           <summary>Как се използва сайтът?</summary>
           <div>
-            <p><b>1. Търси директно в каталозите.</b> Не се чака предварително зареждане или локален OCR индекс — заявката отива към katalozi-bg.info.</p>
+            <p><b>1. Търси директно в каталозите.</b> Заявката отива към katalozi-bg.info и връща актуалните брошури.</p>
             <p><b>2. Филтрирай резултатите.</b> Избери магазин, категория или период, за да стесниш брошурите.</p>
-            <p><b>3. Отвори оригинала.</b> Натисни корицата или ценови ред, за да видиш резултата и страницата в сайта на каталозите.</p>
-            <p><b>4. Сравни цените.</b> Показваме само цени с валута, разпознати в текста на външния резултат; несигурните попадения не се обявяват за цена.</p>
+            <p><b>3. Виж брошурата тук.</b> Натисни корицата за преглед на страницата в прозорец; можеш да го затвориш или отделно да отвориш оригиналния резултат.</p>
           </div>
         </details>
       </section>
@@ -181,7 +177,7 @@ export default function Home() {
       <section className="metrics">
         <div><span>МАГАЗИНИ</span><strong>{stores.length || 66}</strong><small>в каталожния източник</small></div>
         <div><span>НАМЕРЕНИ БРОШУРИ</span><strong>{query.trim() && !loadingResults ? visibleSourceMatches.length : "—"}</strong><small>текущо търсене</small></div>
-        <div className="best-price-metric"><span>НАЙ-НИСКА ЦЕНА</span><strong>{lowestPriceOffer?.priceLabel || "—"}</strong><small>{lowestPriceOffer ? `от ${lowestPriceOffer.storeName}` : "в текущите попадения"}</small></div>
+        <div><span>МАГАЗИНИ В РЕЗУЛТАТИТЕ</span><strong>{query.trim() && !loadingResults ? resultStoreCount : "—"}</strong><small>с попадение за търсенето</small></div>
       </section>
 
       <div className="content-grid">
@@ -192,7 +188,6 @@ export default function Home() {
               <select value={storeFilter} onChange={event => setStoreFilter(event.target.value)}><option value="all">По магазин</option>{sourceStores.map(store => <option value={store} key={store}>{store}</option>)}</select>
               <CategoryFilter value={category} onChange={setCategory} />
               <select value={period} onChange={event => setPeriod(event.target.value)}>{Object.entries(periodLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>
-              <button className="sort-btn" onClick={() => setSort(sort === "price-asc" ? "price-desc" : "price-asc")}><ArrowDownUp size={15} /> Цена {sort === "price-asc" ? "↑" : "↓"}</button>
             </div>
           </div>
 
@@ -200,7 +195,7 @@ export default function Home() {
             : searchError ? <div className="empty search-error"><Search size={30} /><h3>Външният каталог временно не отговаря</h3><p>{searchError}</p><button className="retry-search" onClick={submitSearch}>Опитай отново</button></div>
             : visibleSourceMatches.length > 0 ? <div className="source-card-grid">{visibleSourceMatches.map(match => {
               const isCheapest = cheapestCatalogIds.has(match.id);
-              return <a className={`source-card ${isCheapest ? "is-cheapest" : ""}`} href={match.url} target="_blank" rel="noreferrer" key={match.id}>
+              return <button type="button" className={`source-card ${isCheapest ? "is-cheapest" : ""}`} onClick={() => setActiveCatalog(match)} aria-label={`Преглед на ${match.storeName}, страница ${match.page}`} key={match.id}>
                 <div className="source-card-image">
                   <img src={match.imageUrl} alt={`${match.storeName} — страница ${match.page}`} loading="lazy" />
                   <span className="page-tag">Стр. {match.page}</span>
@@ -208,30 +203,10 @@ export default function Home() {
                   <span className={`source-status ${match.period}`}>{match.statusLabel}</span>
                   {isCheapest && <span className="cheapest-card-badge"><Trophy size={12} /> НАЙ-ЕВТИНО</span>}
                 </div>
-                <div className="source-card-body"><strong>{match.storeName}</strong><span>{match.catalogTitle}</span><small>{match.expirationDate ? `до ${match.expirationDate.slice(0, 10)}` : "Актуален каталог"} <ExternalLink size={12} /></small></div>
-              </a>;
+                <div className="source-card-body"><strong>{match.storeName}</strong><span>{match.catalogTitle}</span><small>{match.expirationDate ? `до ${match.expirationDate.slice(0, 10)}` : "Актуален каталог"} <ChevronRight size={13} /></small></div>
+              </button>;
             })}</div>
-            : <div className="empty"><Search size={30} /><h3>{query ? "Няма намерени каталози" : "Въведи продукт за търсене"}</h3><p>{query ? "Няма съвпадение за избраните категория, период и магазин." : "Например „кафе“ — резултатите ще се заредят директно от каталозите."}</p></div>}
-
-          {!loadingResults && !searchError && query.trim() && visibleSourceMatches.length > 0 && <section className="detail-results source-price-panel">
-            <div className="detail-heading">
-              <div><p className="eyebrow">ЦЕНИ ОТ ПОПАДЕНИЯТА</p><h3>Оферти по брошури</h3></div>
-              <span>{visiblePriceOffers.length} разпознати цени</span>
-            </div>
-            {visiblePriceOffers.length > 0 ? <>
-              <div className="source-price-list">
-                {otherPriceOffers.map(offer => <a className="source-price-row" href={offer.brochureUrl} target="_blank" rel="noreferrer" key={offer.id}>
-                  <div className="source-price-product"><strong>{displayProduct(offer.product) || query}</strong><small>{offer.storeName}{pageNumber(offer.pageUrl) ? ` · Стр. ${pageNumber(offer.pageUrl)}` : ""}</small></div>
-                  <span className="source-price-tag">{offer.priceLabel}</span><ExternalLink size={15} />
-                </a>)}
-              </div>
-              {lowestPriceOffer && <a className="lowest-price-summary" href={lowestPriceOffer.brochureUrl} target="_blank" rel="noreferrer">
-                <div><p className="eyebrow"><Trophy size={14} /> НАЙ-НИСКА ЦЕНА ОТ ПОПАДЕНИЯТА</p><strong>{lowestPriceOffer.priceLabel}</strong><span>{displayProduct(lowestPriceOffer.product) || query} · {lowestPriceOffer.storeName}{pageNumber(lowestPriceOffer.pageUrl) ? ` · Стр. ${pageNumber(lowestPriceOffer.pageUrl)}` : ""}</span></div>
-                <ExternalLink size={18} />
-              </a>}
-              <p className="source-price-note">Всеки ред отваря оригиналния резултат в katalozi-bg.info. Цената е от индексирания текст на източника; провери офертата в брошурата.</p>
-            </> : <div className="source-price-empty">Каталозите върнаха съвпадения, но не и ясно разпозната цена. Отвори оригиналната брошура от картите по-горе.</div>}
-          </section>}
+            : <div className="empty"><Search size={30} /><h3>{query ? "Няма намерени каталози" : "Въведи продукт за търсене"}</h3><p>{query ? "Няма съвпадение за избраните категория, период и магазин." : "Например „кафе“ или „dolce gusto“ — резултатите ще се заредят директно от каталозите."}</p></div>}
         </section>
 
         <aside className="side-rail">
@@ -240,6 +215,17 @@ export default function Home() {
         </aside>
       </div>
     </main>
+
+    {activeCatalog && <div className="catalog-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setActiveCatalog(null); }}>
+      <section className="catalog-modal" role="dialog" aria-modal="true" aria-labelledby="catalog-modal-title">
+        <header className="catalog-modal-header">
+          <div className="catalog-modal-heading"><p className="eyebrow">БРОШУРА · СТР. {activeCatalog.page}</p><h2 id="catalog-modal-title">{activeCatalog.storeName}</h2><span>{activeCatalog.catalogTitle}</span></div>
+          <button className="catalog-modal-close" type="button" onClick={() => setActiveCatalog(null)} aria-label="Затвори прегледа"><X size={22} /></button>
+        </header>
+        <div className="catalog-modal-image-wrap"><img className="catalog-modal-image" src={activeCatalog.pageUrl || activeCatalog.imageUrl} onError={event => { const image = event.currentTarget; if (image.src !== activeCatalog.imageUrl) image.src = activeCatalog.imageUrl; }} alt={`${activeCatalog.storeName}, страница ${activeCatalog.page}`} /></div>
+        <footer className="catalog-modal-footer"><span>{activeCatalog.expirationDate ? `Валидност до ${activeCatalog.expirationDate.slice(0, 10)}` : activeCatalog.statusLabel}</span><a href={activeCatalog.url} target="_blank" rel="noreferrer">Отвори оригинала <ExternalLink size={14} /></a></footer>
+      </section>
+    </div>}
 
     <footer><span>ОФЕРТИКС / 2026</span><span>Данните се зареждат динамично от katalozi-bg.info</span><span>API: /api/catalog</span></footer>
   </div>;
