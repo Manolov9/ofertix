@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const OCR_BATCH_SIZE = Math.min(8, Math.max(1, Number(process.env.OCR_BATCH_SIZE || 6)));
+const OCR_BATCH_CONCURRENCY = 3;
 export type Brochure = { id: string; storeId: string; title: string; url: string; period: OfferPeriod; rawDate: string; thumbnailUrl?: string; pageUrls: string[]; };
 export type Offer = { id: string; product: string; searchText: string; storeId: string; storeName: string; price: number; currency?: "BGN" | "EUR"; priceLabel: string; unit: string; period: OfferPeriod; validLabel: string; brochureUrl: string; pageUrl: string; source: string; imageUrl?: string; };
 export type SyncState = { status: "idle" | "running" | "success" | "error"; stage: string; startedAt?: string; finishedAt?: string; storesProcessed: number; brochuresProcessed: number; offersProcessed: number; message: string; };
@@ -24,6 +26,15 @@ let syncState: SyncState = { status: "idle", stage: "Готово за синх�
 let syncPromise: Promise<void> | null = null;
 
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+async function fetchText(url: string, timeoutMs = 20_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+    return await response.text();
+  } finally { clearTimeout(timer); }
+}
 export const matchesQuery = (value: string, query: string) => normalize(value).toLocaleLowerCase("bg-BG").includes(normalize(query).toLocaleLowerCase("bg-BG"));
 export const formatPrice = (value: number) => value.toFixed(2).replace(".", ",");
 export const formatPriceLabel = (primary: number, secondary?: number) => secondary === undefined ? `${formatPrice(primary)} лв.` : `${formatPrice(primary)} лв. / ${formatPrice(secondary)} лв.`;
@@ -76,12 +87,15 @@ export function extractPageOffers(text: string, brochure: Brochure, storeName: s
 async function ocrImage(imageUrl: string) {
   const dir = await mkdtemp(join(tmpdir(), "ofertix-ocr-"));
   const imagePath = join(dir, "page.jpg");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
   try {
-    const response = await fetch(imageUrl);
+    const response = await fetch(imageUrl, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${imageUrl}`);
     await writeFile(imagePath, Buffer.from(await response.arrayBuffer()));
     const result = await execFileAsync("tesseract", [imagePath, "stdout", "-l", "bul+eng", "--psm", "11"], { maxBuffer: 4_000_000, timeout: 45_000 });
     return result.stdout;
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } finally { clearTimeout(timer); await rm(dir, { recursive: true, force: true }); }
 }
 
 export function firstImageUrl(html: string, baseUrl: string) {
@@ -98,7 +112,7 @@ export async function syncCatalog() {
     const startedAt = new Date().toISOString();
     syncState = { status: "running", stage: "Чета списъка с магазини…", startedAt, storesProcessed: 0, brochuresProcessed: 0, offersProcessed: 0, message: "" };
     try {
-      const html = await fetch(sourceUrl).then(r => r.text());
+      const html = await fetchText(sourceUrl);
       const parsed: Store[] = [];
       const links = [...html.matchAll(/<a[^>]+href=["']([^"']*\/company\/[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)];
       links.forEach((match) => {
@@ -123,7 +137,7 @@ export async function syncCatalog() {
           const store = stores[cursor++];
           syncState = { ...syncState, stage: `Чета каталозите на ${store.name}…`, storesProcessed: Math.min(stores.length, cursor) };
           try {
-            const page = await fetch(store.url).then(r => r.text());
+            const page = await fetchText(store.url);
             const catalogLinks = [...page.matchAll(/<a[^>]+href=["']([^"']*\/catalogs\/[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)];
             catalogLinks.forEach((match, i) => {
               const url = new URL(match[1], store.url).href;
@@ -139,7 +153,7 @@ export async function syncCatalog() {
         while (brochureCursor < nextBrochures.length) {
           const brochure = nextBrochures[brochureCursor++];
           try {
-            const brochureHtml = await fetch(brochure.url).then(r => r.text());
+            const brochureHtml = await fetchText(brochure.url);
             brochure.pageUrls = extractPageUrls(brochureHtml, brochure.url);
             brochure.thumbnailUrl = brochure.pageUrls[0] ? thumbnailForPage(brochure.pageUrls[0]) : firstImageUrl(brochureHtml, brochure.url);
           } catch { /* keep the brochure usable even when its preview image is unavailable */ }
@@ -151,22 +165,30 @@ export async function syncCatalog() {
       const pages = brochures.flatMap(brochure => brochure.pageUrls.map(pageUrl => ({ brochure, pageUrl })));
       const extractedOffers: Offer[] = [];
       let pageCursor = 0;
-      const ocrWorker = async () => {
-        while (pageCursor < pages.length) {
-          const current = pages[pageCursor++];
-          syncState = { ...syncState, stage: `Разчитам продуктите от страница ${pageCursor}/${pages.length}…` };
-          try {
-            const storeName = stores.find(store => store.id === current.brochure.storeId)?.name || `Магазин ${current.brochure.storeId}`;
-            const cached = pageOcrCache.get(current.pageUrl);
-            const pageOffers = cached || extractPageOffers(await ocrImage(current.pageUrl), current.brochure, storeName, current.pageUrl);
-            pageOcrCache.set(current.pageUrl, pageOffers);
-            extractedOffers.push(...pageOffers);
-            syncState = { ...syncState, offersProcessed: extractedOffers.length };
-          } catch { /* keep the page available even if OCR fails for one image */ }
+      // OCR is deliberately sequential and batched. Tesseract is memory-heavy on brochure pages;
+      // keeping only one small batch in flight avoids OOM and lets the event loop answer status calls.
+      while (pageCursor < pages.length) {
+        const batch = pages.slice(pageCursor, pageCursor + OCR_BATCH_SIZE);
+        for (let offset = 0; offset < batch.length; offset += OCR_BATCH_CONCURRENCY) {
+          const slice = batch.slice(offset, offset + OCR_BATCH_CONCURRENCY);
+          const results = await Promise.all(slice.map(async current => {
+            const currentIndex = pages.indexOf(current) + 1;
+            syncState = { ...syncState, stage: `OCR партида ${Math.ceil(currentIndex / OCR_BATCH_SIZE)} · страница ${currentIndex}/${pages.length}…` };
+            try {
+              const storeName = stores.find(store => store.id === current.brochure.storeId)?.name || `Магазин ${current.brochure.storeId}`;
+              const cached = pageOcrCache.get(current.pageUrl);
+              const pageOffers = cached || extractPageOffers(await ocrImage(current.pageUrl), current.brochure, storeName, current.pageUrl);
+              pageOcrCache.set(current.pageUrl, pageOffers);
+              return pageOffers;
+            } catch { return []; /* one failed image must not cancel the remaining batches */ }
+          }));
+          results.forEach(pageOffers => extractedOffers.push(...pageOffers));
+          syncState = { ...syncState, offersProcessed: extractedOffers.length };
         }
-      };
-      const ocrWorkers = Math.min(3, Math.max(1, Number(process.env.OCR_WORKERS || 3)));
-      await Promise.all(Array.from({ length: ocrWorkers }, () => ocrWorker()));
+        pageCursor += batch.length;
+        // Yield after every batch so /api/sync/status remains responsive and memory can be reclaimed.
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
       offers = extractedOffers;
       syncState = { status: "success", stage: "Синхронизацията завърши", startedAt, finishedAt: new Date().toISOString(), storesProcessed: stores.length, brochuresProcessed: brochures.length, offersProcessed: offers.length, message: `Заредени са ${stores.length} магазина и ${brochures.length} каталога.` };
     } catch (error) {
