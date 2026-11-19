@@ -1,13 +1,13 @@
 # Офертикс
 
-Офертикс е българска търсачка за актуални брошури в [katalozi-bg.info](https://katalozi-bg.info/companies). Търсенето се изпълнява динамично към каталожния източник; приложението показва съвпадащите брошури и ценови попадения с връзки към оригиналните резултати.
+Офертикс е българска търсачка за актуални брошури в [katalozi-bg.info](https://katalozi-bg.info/companies). Търсенето се изпълнява динамично към каталожния източник; приложението показва съвпадащите брошури в source реда, наличната най-ниска разпозната цена и преглед на намерената страница.
 
 ## Как работи текущият режим
 
 - Търси продукт във външните каталози по фраза, магазин, категория и период.
 - Показва каталожни карти, магазин, страница и брой намерени съвпадения.
-- Извлича ценови етикет само когато текстът, върнат от източника, съдържа сума с валута. Съхранява видима мерна единица като `/бр.` или `/кг.`.
-- Показва останалите цени като кликаеми редове, а най-ниската разпозната цена — като кликаема обобщена карта след списъка. Кликът отваря оригиналния резултат в katalozi-bg.info.
+- Извлича ценови етикет само когато текстът, върнат от източника, съдържа сума с валута. Показва най-ниската разпозната цена и магазина в горната обобщаваща лента, а съответната брошура запазва зеления бадж „НАЙ-ЕВТИНО“.
+- Не показва отделен списък с ценови редове. Клик върху брошура отваря намерената страница в затваряем прозорец; от него може да се отвори и оригиналният резултат в katalozi-bg.info.
 - Не изисква потребителски вход, MySQL база или локално OCR за търсенето.
 
 Цените се извличат от текстовия индекс на външния сайт, не чрез OCR на сървъра на Офертикс. Текстът на източника може да съдържа OCR шум; неясните суми без валута не се показват като цени. Различни разфасовки и единици не се преизчисляват към обща цена за килограм/опаковка. Проверявай крайната цена, разфасовката и срока в оригиналната брошура.
@@ -72,11 +72,13 @@ curl -G 'http://127.0.0.1:3000/api/catalog' \
 
 Примерът е за Ubuntu/Debian VPS с вече инсталиран Node.js 22. За самото live search не инсталирай MySQL, Tesseract или OCR worker. За домейн и HTTPS ще се използват Nginx и Let's Encrypt.
 
+Пълното ръководство за DNS, firewall, systemd, Nginx, HTTPS, GitHub обновяване, проверки и troubleshooting е в [DEPLOY-VPS.md](DEPLOY-VPS.md). Следвай него като основна инструкция; примерът по-долу е съкратен.
+
 ### 1. Инсталирай системните пакети и клонирай проекта
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y git nginx certbot python3-certbot-nginx
+sudo apt-get install -y git nginx certbot python3-certbot-nginx ufw
 sudo mkdir -p /opt/ofertix
 sudo chown "$USER":"$(id -gn)" /opt/ofertix
 git clone https://github.com/Manolov9/ofertix.git /opt/ofertix
@@ -139,7 +141,7 @@ command -v node
 command -v pnpm
 ```
 
-Създай `/etc/systemd/system/ofertix.service` и замени примерните потребител, група и executable paths:
+Създай `/etc/systemd/system/ofertix.service`, замени потребителя/групата с резултатите от предните команди и постави в `ExecStart` абсолютния път, върнат от `command -v node` (не само думата `node`):
 
 ```ini
 [Unit]
@@ -152,8 +154,7 @@ User=ЗАМЕНИ_С_LINUX_ПОТРЕБИТЕЛ
 Group=ЗАМЕНИ_С_LINUX_ГРУПА
 WorkingDirectory=/opt/ofertix
 EnvironmentFile=/opt/ofertix/.env
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env pnpm start
+ExecStart=/ABSOLUTE/PATH/TO/node /opt/ofertix/dist/index.js
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -163,7 +164,7 @@ PrivateTmp=true
 WantedBy=multi-user.target
 ```
 
-Ако Node/pnpm са инсталирани с `nvm`, добави директорията им в `Environment=PATH=...`; `systemd` не зарежда интерактивния shell профил.
+Точният път в `ExecStart` позволява услугата да работи и когато Node е инсталиран с `nvm`; при обновяване на Node версията провери дали този път не се е променил.
 
 Включи и провери услугата:
 
@@ -203,7 +204,17 @@ sudo systemctl reload nginx
 sudo certbot --nginx -d ofertix.example.com
 ```
 
-Във firewall-а разреши SSH, HTTP `80` и HTTPS `443`. Не е необходимо да отваряш MySQL `3306` за този режим.
+Във firewall-а разреши SSH, HTTP `80` и HTTPS `443`; първо добави SSH правилото, за да не се заключиш извън сървъра:
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 'Nginx Full'
+sudo ufw status verbose
+sudo ufw enable
+sudo ufw status verbose
+```
+
+Разреши същите TCP портове и във firewall-а на VPS доставчика. Не отваряй порт `3000` публично и не е нужно MySQL `3306` за този режим.
 
 ### 6. Обновявай приложението
 
